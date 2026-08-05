@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CompressX — File Compression Tool</title>
+  <meta name="description" content="Compress files in your browser with hand-built Huffman & LZ77 algorithms. Real-time collaborative workspace.">
+  <meta property="og:title" content="CompressX — File Compression Tool">
+  <meta property="og:description" content="Client-side file compression with custom algorithms and live collaboration.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <svg class="logo-icon" viewBox="0 0 28 28" fill="none">
+          <rect x="2" y="6" width="24" height="16" rx="3" stroke="currentColor" stroke-width="2"/>
+          <path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="14" cy="14" r="5" stroke="currentColor" stroke-width="1.5" opacity="0.4"/>
+        </svg>
+        <span class="logo-text">CompressX</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="connection-status" id="connectionStatus">
+        <span class="status-dot"></span>
+        <span class="status-text">Connecting...</span>
+      </div>
+      <button class="btn btn-ghost" id="collapseCollab" title="Toggle collaboration panel">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Layout -->
+  <div class="layout">
+    <!-- Main Content -->
+    <main class="main">
+      <!-- Upload Section -->
+      <section class="section" id="uploadSection">
+        <div class="drop-zone" id="dropZone">
+          <div class="drop-zone-content">
+            <svg class="drop-icon" viewBox="0 0 48 48" fill="none">
+              <path d="M24 32V16m0 0l-7 7m7-7l7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 32v4a4 4 0 004 4h24a4 4 0 004-4v-4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <p class="drop-text">Drop a file here or <button class="link-btn" id="browseBtn">browse</button></p>
+            <p class="drop-hint">Max 50 MB • Any file type</p>
+          </div>
+          <input type="file" id="fileInput" hidden>
+        </div>
+      </section>
+
+      <!-- File Info + Controls -->
+      <section class="section file-controls hidden" id="fileControls">
+        <div class="file-info" id="fileInfo">
+          <div class="file-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+          </div>
+          <div class="file-meta">
+            <span class="file-name" id="fileName">—</span>
+            <span class="file-size" id="fileSize">—</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="clearFile" title="Remove file">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <div class="controls-row">
+          <div class="algo-selector">
+            <label class="label">Algorithm</label>
+            <div class="radio-group" id="algoSelector">
+              <label class="radio-card">
+                <input type="radio" name="algo" value="0" checked>
+                <span class="radio-label">Huffman</span>
+                <span class="radio-desc">Entropy coding</span>
+              </label>
+              <label class="radio-card">
+                <input type="radio" name="algo" value="1">
+                <span class="radio-label">LZ77</span>
+                <span class="radio-desc">Dictionary</span>
+              </label>
+              <label class="radio-card">
+                <input type="radio" name="algo" value="2">
+                <span class="radio-label">Combined</span>
+                <span class="radio-desc">LZ77 + Huffman</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="action-buttons">
+            <button class="btn btn-primary" id="compressBtn" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              Compress
+            </button>
+            <button class="btn btn-secondary" id="decompressBtn" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              Decompress
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Progress -->
+      <section class="section progress-section hidden" id="progressSection">
+        <div class="progress-header">
+          <span class="progress-label" id="progressLabel">Compressing...</span>
+          <span class="progress-percent" id="progressPercent">0%</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+      </section>
+
+      <!-- Results -->
+      <section class="section results-section hidden" id="resultsSection">
+        <h2 class="section-title">Results</h2>
+
+        <div class="stats-grid" id="statsGrid">
+          <div class="stat-card">
+            <span class="stat-label">Original Size</span>
+            <span class="stat-value" id="statOriginal">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Compressed Size</span>
+            <span class="stat-value" id="statCompressed">—</span>
+          </div>
+          <div class="stat-card accent">
+            <span class="stat-label">Compression Ratio</span>
+            <span class="stat-value" id="statRatio">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Time</span>
+            <span class="stat-value" id="statTime">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Speed</span>
+            <span class="stat-value" id="statSpeed">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Algorithm</span>
+            <span class="stat-value" id="statAlgo">—</span>
+          </div>
+        </div>
+
+        <!-- Frequency chart -->
+        <div class="chart-container hidden" id="chartContainer">
+          <h3 class="chart-title">Byte Frequency Distribution</h3>
+          <canvas id="freqChart" width="800" height="200"></canvas>
+        </div>
+
+        <div class="result-actions">
+          <button class="btn btn-primary" id="downloadBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download
+          </button>
+          <button class="btn btn-ghost" id="newFileBtn">Compress another</button>
+        </div>
+      </section>
+
+      <!-- Room Activity Feed -->
+      <section class="section activity-section hidden" id="activitySection">
+        <h2 class="section-title">Room Activity</h2>
+        <div class="activity-feed" id="activityFeed"></div>
+      </section>
+    </main>
+
+    <!-- Collaboration Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Collaborate</h3>
+        <p class="sidebar-desc">Share a room to see each other's compression results live.</p>
+
+        <!-- Not in a room -->
+        <div id="roomJoinUI">
+          <input type="text" class="input" id="nameInput" placeholder="Your name" maxlength="20">
+          <div class="room-actions">
+            <button class="btn btn-primary btn-sm" id="createRoomBtn">Create Room</button>
+            <div class="join-row">
+              <input type="text" class="input input-sm" id="roomCodeInput" placeholder="Room code" maxlength="6">
+              <button class="btn btn-secondary btn-sm" id="joinRoomBtn">Join</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- In a room -->
+        <div class="hidden" id="roomActiveUI">
+          <div class="room-badge">
+            <span class="room-code" id="roomCodeDisplay">—</span>
+            <button class="btn btn-ghost btn-xs" id="copyCodeBtn" title="Copy room code">Copy</button>
+            <button class="btn btn-ghost btn-xs btn-danger" id="leaveRoomBtn">Leave</button>
+          </div>
+
+          <div class="members-list" id="membersList"></div>
+
+          <div class="chat-box">
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input-row">
+              <input type="text" class="input input-sm" id="chatInput" placeholder="Message..." maxlength="500">
+              <button class="btn btn-primary btn-xs" id="sendChatBtn">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="websocket-client.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
