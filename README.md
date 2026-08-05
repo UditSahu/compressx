@@ -131,7 +131,7 @@ This typically achieves the best compression ratio because it attacks **both** t
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/compressx.git
+git clone https://github.com/uditsahu/compressx.git
 cd compressx
 
 # Install (just 2 packages)
