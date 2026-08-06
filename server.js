@@ -13,7 +13,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
   lastModified: true
 }));
 
-const wss = new WebSocketServer({ server, perMessageDeflate: false });
+const wss = new WebSocketServer({ server, perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
 
 const rooms = new Map();
 const users = new WeakMap();
@@ -43,6 +43,20 @@ function broadcastToRoom(roomCode, message, excludeWs) {
   for (const client of room) {
     if (client !== excludeWs && client.readyState === 1) {
       client.send(payload);
+    }
+  }
+}
+
+/**
+ * Broadcast binary data to room members (for file transfer).
+ */
+function broadcastBinaryToRoom(roomCode, data, excludeWs) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  for (const client of room) {
+    if (client !== excludeWs && client.readyState === 1) {
+      client.send(data);
     }
   }
 }
@@ -82,16 +96,24 @@ wss.on('connection', (ws) => {
     color: userColor
   });
 
-  ws.on('message', (raw) => {
+  ws.on('message', (raw, isBinary) => {
+    const user = users.get(ws);
+    if (!user) return;
+
+    // Binary message = file transfer chunk
+    if (isBinary) {
+      if (!user.room) return;
+      // Relay binary data to all other room members
+      broadcastBinaryToRoom(user.room, raw, ws);
+      return;
+    }
+
     let msg;
     try {
       msg = JSON.parse(raw);
     } catch {
       return;
     }
-
-    const user = users.get(ws);
-    if (!user) return;
 
     switch (msg.event) {
       case 'room:create': {
@@ -173,6 +195,44 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      // File transfer signaling messages
+      case 'file:transfer:start': {
+        if (!user.room) break;
+        broadcastToRoom(user.room, {
+          event: 'file:transfer:start',
+          userId: user.id,
+          userName: user.name,
+          fileName: (msg.fileName || '').slice(0, 200),
+          fileSize: msg.fileSize || 0,
+          totalChunks: msg.totalChunks || 0,
+          encrypted: !!msg.encrypted,
+          transferId: msg.transferId
+        }, ws);
+        break;
+      }
+
+      case 'file:transfer:end': {
+        if (!user.room) break;
+        broadcastToRoom(user.room, {
+          event: 'file:transfer:end',
+          userId: user.id,
+          userName: user.name,
+          transferId: msg.transferId
+        }, ws);
+        break;
+      }
+
+      case 'file:transfer:error': {
+        if (!user.room) break;
+        broadcastToRoom(user.room, {
+          event: 'file:transfer:error',
+          userId: user.id,
+          transferId: msg.transferId,
+          message: msg.message
+        }, ws);
+        break;
+      }
+
       case 'chat:message': {
         if (!user.room) break;
         const text = (msg.text || '').trim().slice(0, 500);
@@ -237,14 +297,10 @@ function leaveRoom(ws) {
 
 const HEARTBEAT_INTERVAL = 30000;
 
-wss.on('connection', (ws) => {
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
-});
-
+// Single connection handler for heartbeat (merged with main handler above)
 const heartbeat = setInterval(() => {
   wss.clients.forEach((ws) => {
-    if (!ws.isAlive) {
+    if (ws.isAlive === false) {
       leaveRoom(ws);
       return ws.terminate();
     }
@@ -252,6 +308,12 @@ const heartbeat = setInterval(() => {
     ws.ping();
   });
 }, HEARTBEAT_INTERVAL);
+
+// Set isAlive on each new connection
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+});
 
 wss.on('close', () => clearInterval(heartbeat));
 

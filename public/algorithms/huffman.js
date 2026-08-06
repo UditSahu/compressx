@@ -76,12 +76,14 @@ function buildHuffmanTree(freq) {
   }
 
   if (heap.size === 0) {
-    return new HuffmanNode(0, 0);
+    return { tree: new HuffmanNode(0, 0), uniqueCount: 0 };
   }
   if (heap.size === 1) {
     const only = heap.pop();
-    return new HuffmanNode(null, only.freq, only, null);
+    return { tree: only, uniqueCount: 1 };
   }
+
+  const uniqueCount = heap.size;
 
   while (heap.size > 1) {
     const left = heap.pop();
@@ -90,38 +92,52 @@ function buildHuffmanTree(freq) {
     heap.push(merged);
   }
 
-  return heap.pop();
+  return { tree: heap.pop(), uniqueCount };
 }
 
+/**
+ * Generate code table using string-based bit sequences.
+ * This avoids the 32-bit integer overflow that corrupts data
+ * when Huffman codes exceed 31 bits in length.
+ */
 function generateCodeTable(root) {
   const table = new Array(256).fill(null);
 
-  function traverse(node, code, length) {
+  function traverse(node, codeBits) {
     if (node === null) return;
     if (node.byte !== null) {
-      table[node.byte] = { code, length: Math.max(length, 1) };
+      // Leaf node — store the code as an array of 0/1 values
+      table[node.byte] = codeBits.length > 0 ? codeBits.slice() : [0];
       return;
     }
-    traverse(node.left, (code << 1), length + 1);
-    traverse(node.right, (code << 1) | 1, length + 1);
+    codeBits.push(0);
+    traverse(node.left, codeBits);
+    codeBits.pop();
+
+    codeBits.push(1);
+    traverse(node.right, codeBits);
+    codeBits.pop();
   }
 
-  traverse(root, 0, 0);
+  traverse(root, []);
   return table;
 }
 
 class BitWriter {
   constructor(estimatedSize) {
-    this.buffer = new Uint8Array(estimatedSize);
+    this.buffer = new Uint8Array(Math.max(estimatedSize, 1024));
     this.bytePos = 0;
     this.bitPos = 0;
     this.currentByte = 0;
   }
 
-  writeBits(code, length) {
-    for (let i = length - 1; i >= 0; i--) {
-      const bit = (code >> i) & 1;
-      this.currentByte = (this.currentByte << 1) | bit;
+  /**
+   * Write an array of bit values (0 or 1).
+   * This replaces the old writeBits(code, length) that used integer shifts.
+   */
+  writeBitArray(bits) {
+    for (let i = 0; i < bits.length; i++) {
+      this.currentByte = (this.currentByte << 1) | bits[i];
       this.bitPos++;
       if (this.bitPos === 8) {
         this._ensureCapacity();
@@ -160,17 +176,59 @@ function huffmanEncode(data, onProgress) {
   const startTime = performance.now();
 
   if (data.length === 0) {
+    // Empty file: 4 bytes original size (0) + 1 byte flags
+    const header = new Uint8Array(5);
     return {
-      compressed: new Uint8Array([0, 0, 0, 0, 0, ...new Uint8Array(1024)]),
-      stats: { originalSize: 0, compressedSize: 1029, ratio: 0, time: 0, algorithm: 'huffman' }
+      compressed: header,
+      stats: { originalSize: 0, compressedSize: 5, ratio: '0.00', time: '0.00', algorithm: 'huffman' }
     };
   }
 
   const freq = buildFrequencyTable(data);
   if (onProgress) onProgress(0.1);
 
-  const tree = buildHuffmanTree(freq);
+  const { tree, uniqueCount } = buildHuffmanTree(freq);
   if (onProgress) onProgress(0.2);
+
+  // Special case: single unique byte value
+  // Just store the byte value and count — no bitstream needed
+  if (uniqueCount === 1) {
+    // Header: [originalSize:4][flags:1 = 0x08 for single-byte mode][byteValue:1][freq table:256*4]
+    const headerSize = 4 + 1 + 1 + 256 * 4;
+    const output = new Uint8Array(headerSize);
+    const view = new DataView(output.buffer);
+
+    view.setUint32(0, data.length, false);
+    output[4] = 0x08; // flags: bit 3 = single-byte mode (avoids collision with paddingBits 0-7)
+
+    // Find the single byte
+    let singleByte = 0;
+    for (let i = 0; i < 256; i++) {
+      if (freq[i] > 0) { singleByte = i; break; }
+    }
+    output[5] = singleByte;
+
+    // Write frequency table for compatibility
+    for (let i = 0; i < 256; i++) {
+      view.setUint32(6 + i * 4, freq[i], false);
+    }
+
+    const elapsed = performance.now() - startTime;
+    if (onProgress) onProgress(1);
+
+    return {
+      compressed: output,
+      stats: {
+        originalSize: data.length,
+        compressedSize: output.length,
+        ratio: ((1 - output.length / data.length) * 100).toFixed(2),
+        time: elapsed.toFixed(2),
+        algorithm: 'huffman',
+        uniqueBytes: 1,
+        frequencyTable: Array.from(freq)
+      }
+    };
+  }
 
   const codeTable = generateCodeTable(tree);
   if (onProgress) onProgress(0.3);
@@ -180,7 +238,7 @@ function huffmanEncode(data, onProgress) {
 
   for (let i = 0; i < data.length; i++) {
     const entry = codeTable[data[i]];
-    writer.writeBits(entry.code, entry.length);
+    writer.writeBitArray(entry);
     if (onProgress && i % progressStep === 0) {
       onProgress(0.3 + 0.6 * (i / data.length));
     }
@@ -190,12 +248,17 @@ function huffmanEncode(data, onProgress) {
   const compressedData = writer.getResult();
   if (onProgress) onProgress(0.95);
 
+  // Header: [originalSize:4][flags:1 = paddingBits in low 3 bits, bit3=0 for normal mode]
+  //         [freqTable:256*4][compressedData]
   const headerSize = 4 + 1 + 256 * 4;
   const output = new Uint8Array(headerSize + compressedData.length);
   const view = new DataView(output.buffer);
 
   view.setUint32(0, data.length, false);
-  output[4] = paddingBits;
+  // flags byte: low 3 bits = padding, bit 3 = 0 (normal mode)
+  // Old format had paddingBits at byte[4] directly, which is compatible
+  // since paddingBits is always 0-7 (fits in low 3 bits) and bit 3 wasn't used
+  output[4] = paddingBits & 0x07;
 
   for (let i = 0; i < 256; i++) {
     view.setUint32(5 + i * 4, freq[i], false);
@@ -214,7 +277,7 @@ function huffmanEncode(data, onProgress) {
       ratio: ((1 - output.length / data.length) * 100).toFixed(2),
       time: elapsed.toFixed(2),
       algorithm: 'huffman',
-      uniqueBytes: freq.reduce((c, f) => c + (f > 0 ? 1 : 0), 0),
+      uniqueBytes: uniqueCount,
       frequencyTable: Array.from(freq)
     }
   };
@@ -222,17 +285,43 @@ function huffmanEncode(data, onProgress) {
 
 function huffmanDecode(compressed, onProgress) {
   const startTime = performance.now();
-  const view = new DataView(compressed.buffer, compressed.byteOffset, compressed.byteLength);
 
+  if (compressed.length < 5) {
+    throw new Error('Invalid Huffman data: too short');
+  }
+
+  const view = new DataView(compressed.buffer, compressed.byteOffset, compressed.byteLength);
   const originalSize = view.getUint32(0, false);
-  const paddingBits = compressed[4];
+  const flags = compressed[4];
 
   if (originalSize === 0) {
     return {
       decompressed: new Uint8Array(0),
-      stats: { originalSize: 0, time: 0, algorithm: 'huffman' }
+      stats: { originalSize: 0, time: '0.00', algorithm: 'huffman' }
     };
   }
+
+  // Check single-byte mode (bit 3 set)
+  if (flags & 0x08) {
+    const singleByte = compressed[5];
+    const output = new Uint8Array(originalSize);
+    output.fill(singleByte);
+
+    const elapsed = performance.now() - startTime;
+    if (onProgress) onProgress(1);
+
+    return {
+      decompressed: output,
+      stats: {
+        originalSize,
+        time: elapsed.toFixed(2),
+        algorithm: 'huffman'
+      }
+    };
+  }
+
+  // Normal mode: paddingBits stored in low 3 bits of flags
+  const paddingBits = flags & 0x07;
 
   const freq = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
@@ -240,7 +329,7 @@ function huffmanDecode(compressed, onProgress) {
   }
   if (onProgress) onProgress(0.1);
 
-  const tree = buildHuffmanTree(freq);
+  const { tree } = buildHuffmanTree(freq);
   if (onProgress) onProgress(0.2);
 
   const headerSize = 4 + 1 + 256 * 4;
@@ -260,6 +349,10 @@ function huffmanDecode(compressed, onProgress) {
       const bit = (byte >> bitIdx) & 1;
       node = bit === 0 ? node.left : node.right;
 
+      if (node === null) {
+        throw new Error('Huffman decode error: invalid bit sequence encountered');
+      }
+
       if (node.byte !== null) {
         output[outPos++] = node.byte;
         node = tree;
@@ -272,6 +365,10 @@ function huffmanDecode(compressed, onProgress) {
       }
     }
     if (outPos >= originalSize) break;
+  }
+
+  if (outPos !== originalSize) {
+    throw new Error(`Huffman decode error: expected ${originalSize} bytes but got ${outPos}`);
   }
 
   const elapsed = performance.now() - startTime;

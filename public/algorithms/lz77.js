@@ -1,6 +1,7 @@
 const WINDOW_SIZE = 4096;
 const LOOKAHEAD_SIZE = 258;
 const MIN_MATCH_LENGTH = 3;
+const MAX_ENCODED_LENGTH = MIN_MATCH_LENGTH + 15; // 18 bytes max per token
 const HASH_SIZE = 4096;
 const HASH_MASK = HASH_SIZE - 1;
 
@@ -9,7 +10,11 @@ function hash3(data, pos) {
   return ((data[pos] << 8) ^ (data[pos + 1] << 4) ^ data[pos + 2]) & HASH_MASK;
 }
 
-function findMatch(data, pos, hashTable, chainTable) {
+/**
+ * Find best match using hash chains.
+ * Uses a proper prev[] array sized to WINDOW_SIZE to avoid chain table collisions.
+ */
+function findMatch(data, pos, hashTable, prevTable) {
   let bestOffset = 0;
   let bestLength = 0;
 
@@ -20,7 +25,7 @@ function findMatch(data, pos, hashTable, chainTable) {
   const minPos = Math.max(0, pos - WINDOW_SIZE);
   let chainsLeft = 64;
 
-  while (candidate >= minPos && chainsLeft-- > 0) {
+  while (candidate >= minPos && candidate < pos && chainsLeft-- > 0) {
     if (data[candidate + bestLength] === data[pos + bestLength] &&
         data[candidate] === data[pos]) {
 
@@ -37,8 +42,10 @@ function findMatch(data, pos, hashTable, chainTable) {
       }
     }
 
-    candidate = chainTable[candidate & HASH_MASK];
-    if (candidate <= minPos) break;
+    // Follow the chain using prev[] indexed by (candidate % WINDOW_SIZE)
+    const prevPos = prevTable[candidate % WINDOW_SIZE];
+    if (prevPos >= candidate || prevPos < minPos) break; // prevent infinite loops
+    candidate = prevPos;
   }
 
   if (bestLength < MIN_MATCH_LENGTH) {
@@ -46,6 +53,17 @@ function findMatch(data, pos, hashTable, chainTable) {
   }
 
   return { offset: bestOffset, length: bestLength };
+}
+
+/**
+ * Insert a position into the hash chain.
+ */
+function insertHash(data, pos, hashTable, prevTable) {
+  if (pos + MIN_MATCH_LENGTH > data.length) return;
+  const h = hash3(data, pos);
+  // Store the previous head of this hash chain
+  prevTable[pos % WINDOW_SIZE] = hashTable[h];
+  hashTable[h] = pos;
 }
 
 function lz77Encode(data, onProgress) {
@@ -60,7 +78,8 @@ function lz77Encode(data, onProgress) {
   }
 
   const hashTable = new Int32Array(HASH_SIZE).fill(-1);
-  const chainTable = new Int32Array(HASH_SIZE).fill(-1);
+  // prev[] is indexed by (pos % WINDOW_SIZE), stores previous chain link
+  const prevTable = new Int32Array(WINDOW_SIZE).fill(-1);
 
   const tokens = [];
   let pos = 0;
@@ -69,29 +88,42 @@ function lz77Encode(data, onProgress) {
   let literalCount = 0;
 
   while (pos < data.length) {
-    const match = findMatch(data, pos, hashTable, chainTable);
+    const match = findMatch(data, pos, hashTable, prevTable);
 
     if (match.length >= MIN_MATCH_LENGTH) {
-      tokens.push({ type: 1, offset: match.offset, length: match.length });
-      matchCount++;
+      // Split long matches into multiple tokens to avoid truncation.
+      // Each token can encode at most MAX_ENCODED_LENGTH (18) bytes.
+      let remaining = match.length;
+      const matchOffset = match.offset;
 
-      for (let i = 0; i < match.length; i++) {
-        if (pos + i + MIN_MATCH_LENGTH <= data.length) {
-          const h = hash3(data, pos + i);
-          chainTable[(pos + i) & HASH_MASK] = hashTable[h];
-          hashTable[h] = pos + i;
+      while (remaining >= MIN_MATCH_LENGTH) {
+        const tokenLen = Math.min(remaining, MAX_ENCODED_LENGTH);
+        tokens.push({ type: 1, offset: matchOffset, length: tokenLen });
+        matchCount++;
+
+        // Insert hash entries for positions we're advancing over
+        for (let i = 0; i < tokenLen; i++) {
+          insertHash(data, pos + i, hashTable, prevTable);
         }
+
+        pos += tokenLen;
+        remaining -= tokenLen;
+        // The offset stays the SAME for continuation tokens.
+        // After advancing pos by tokenLen, the source data also advanced
+        // by the same amount, so the distance remains match.offset.
       }
-      pos += match.length;
+
+      // Handle leftover bytes that are too short for a match token
+      for (let i = 0; i < remaining; i++) {
+        tokens.push({ type: 0, value: data[pos] });
+        literalCount++;
+        insertHash(data, pos, hashTable, prevTable);
+        pos++;
+      }
     } else {
       tokens.push({ type: 0, value: data[pos] });
       literalCount++;
-
-      if (pos + MIN_MATCH_LENGTH <= data.length) {
-        const h = hash3(data, pos);
-        chainTable[pos & HASH_MASK] = hashTable[h];
-        hashTable[h] = pos;
-      }
+      insertHash(data, pos, hashTable, prevTable);
       pos++;
     }
 
@@ -103,14 +135,15 @@ function lz77Encode(data, onProgress) {
   if (onProgress) onProgress(0.85);
 
   const estimatedSize = 4 + tokens.length * 3 + Math.ceil(tokens.length / 8);
-  let output = new Uint8Array(estimatedSize);
+  let output = new Uint8Array(Math.max(estimatedSize, 64));
   const view = new DataView(output.buffer);
 
   view.setUint32(0, data.length, false);
   let writePos = 4;
 
   for (let i = 0; i < tokens.length; i += 8) {
-    if (writePos + 1 + 8 * 3 > output.length) {
+    // Ensure we have enough room for flag byte + up to 8 tokens * 2 bytes each
+    if (writePos + 1 + 8 * 2 > output.length) {
       const newOutput = new Uint8Array(output.length * 2);
       newOutput.set(output);
       output = newOutput;
@@ -128,10 +161,22 @@ function lz77Encode(data, onProgress) {
     for (let j = i; j < groupEnd; j++) {
       const token = tokens[j];
       if (token.type === 0) {
+        if (writePos >= output.length) {
+          const newOutput = new Uint8Array(output.length * 2);
+          newOutput.set(output);
+          output = newOutput;
+        }
         output[writePos++] = token.value;
       } else {
-        const len = Math.min(token.length, MIN_MATCH_LENGTH + 15) - MIN_MATCH_LENGTH;
-        const off = token.offset;
+        if (writePos + 1 >= output.length) {
+          const newOutput = new Uint8Array(output.length * 2);
+          newOutput.set(output);
+          output = newOutput;
+        }
+        // Encode: length is always (actualLen - MIN_MATCH_LENGTH), fits in 4 bits (0-15)
+        // Offset fits in 12 bits (0-4095), matching WINDOW_SIZE
+        const len = token.length - MIN_MATCH_LENGTH;
+        const off = Math.min(token.offset, 0xFFF); // clamp to 12 bits
         output[writePos++] = ((off >> 8) & 0x0F) | ((len & 0x0F) << 4);
         output[writePos++] = off & 0xFF;
       }
@@ -161,9 +206,14 @@ function lz77Encode(data, onProgress) {
 
 function lz77Decode(compressed, onProgress) {
   const startTime = performance.now();
-  const view = new DataView(compressed.buffer, compressed.byteOffset, compressed.byteLength);
 
+  if (compressed.length < 4) {
+    throw new Error('Invalid LZ77 data: too short');
+  }
+
+  const view = new DataView(compressed.buffer, compressed.byteOffset, compressed.byteLength);
   const originalSize = view.getUint32(0, false);
+
   if (originalSize === 0) {
     return {
       decompressed: new Uint8Array(0),
@@ -179,6 +229,7 @@ function lz77Decode(compressed, onProgress) {
   const progressStep = Math.max(1, Math.floor(totalBytes / 50));
 
   while (readPos < compressed.length && outPos < originalSize) {
+    if (readPos >= compressed.length) break;
     const flagByte = compressed[readPos++];
 
     for (let bit = 7; bit >= 0 && readPos < compressed.length && outPos < originalSize; bit--) {
@@ -192,11 +243,16 @@ function lz77Decode(compressed, onProgress) {
         const length = ((byte1 >> 4) & 0x0F) + MIN_MATCH_LENGTH;
         const offset = ((byte1 & 0x0F) << 8) | byte2;
 
+        if (offset === 0 || offset > outPos) {
+          throw new Error(`LZ77 decode error: invalid offset ${offset} at position ${outPos}`);
+        }
+
         const srcPos = outPos - offset;
         for (let j = 0; j < length && outPos < originalSize; j++) {
           output[outPos++] = output[srcPos + j];
         }
       } else {
+        if (readPos >= compressed.length) break;
         output[outPos++] = compressed[readPos++];
       }
     }
@@ -204,6 +260,10 @@ function lz77Decode(compressed, onProgress) {
     if (onProgress && readPos % progressStep === 0) {
       onProgress(0.1 + 0.85 * (readPos / compressed.length));
     }
+  }
+
+  if (outPos !== originalSize) {
+    throw new Error(`LZ77 decode error: expected ${originalSize} bytes but got ${outPos}`);
   }
 
   const elapsed = performance.now() - startTime;

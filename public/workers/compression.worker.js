@@ -1,11 +1,12 @@
 importScripts(
   '../algorithms/huffman.js',
   '../algorithms/lz77.js',
+  '../algorithms/encryption.js',
   '../algorithms/compressor.js'
 );
 
-self.onmessage = function(e) {
-  const { action, buffer, filename, mode } = e.data;
+self.onmessage = async function(e) {
+  const { action, buffer, filename, mode, password, encrypted } = e.data;
 
   try {
     const data = new Uint8Array(buffer);
@@ -15,20 +16,47 @@ self.onmessage = function(e) {
     };
 
     if (action === 'compress') {
-      const result = self.Compressor.compress(data, filename, mode, onProgress);
+      let result;
 
-      const outBuffer = result.compressed.buffer.slice(
-        result.compressed.byteOffset,
-        result.compressed.byteOffset + result.compressed.byteLength
-      );
-
-      self.postMessage(
-        { type: 'result', buffer: outBuffer, stats: result.stats, filename: filename + '.compx' },
-        [outBuffer]
-      );
+      if (encrypted && password) {
+        // Compress + Encrypt
+        result = await self.Compressor.compressAndEncrypt(data, filename, mode, password, onProgress);
+        const outBuffer = result.compressed.buffer.slice(
+          result.compressed.byteOffset,
+          result.compressed.byteOffset + result.compressed.byteLength
+        );
+        self.postMessage(
+          { type: 'result', buffer: outBuffer, stats: result.stats, filename: filename + '.compx.enc' },
+          [outBuffer]
+        );
+      } else {
+        // Compress only
+        result = self.Compressor.compress(data, filename, mode, onProgress);
+        const outBuffer = result.compressed.buffer.slice(
+          result.compressed.byteOffset,
+          result.compressed.byteOffset + result.compressed.byteLength
+        );
+        self.postMessage(
+          { type: 'result', buffer: outBuffer, stats: result.stats, filename: filename + '.compx' },
+          [outBuffer]
+        );
+      }
 
     } else if (action === 'decompress') {
-      const result = self.Compressor.decompress(data, onProgress);
+      let result;
+
+      // Check if file is encrypted (magic bytes + encrypted flag)
+      const isEncrypted = data.length >= 6 && (data[5] & 0x04) !== 0;
+
+      if (isEncrypted) {
+        if (!password) {
+          self.postMessage({ type: 'need_password' });
+          return;
+        }
+        result = await self.Compressor.decryptAndDecompress(data, password, onProgress);
+      } else {
+        result = self.Compressor.decompress(data, onProgress);
+      }
 
       const outBuffer = result.decompressed.buffer.slice(
         result.decompressed.byteOffset,

@@ -16,7 +16,12 @@
   --success: #00cec9;
   --success-soft: rgba(0, 206, 201, 0.12);
   --warning: #fdcb6e;
+  --warning-soft: rgba(253, 203, 110, 0.12);
   --danger: #e17055;
+  --danger-soft: rgba(225, 112, 85, 0.1);
+
+  --encrypt-color: #00b894;
+  --encrypt-soft: rgba(0, 184, 148, 0.12);
 
   --border: #252839;
   --border-hover: #353a52;
@@ -185,6 +190,7 @@ body {
   margin-bottom: 14px;
 }
 
+/* Drop Zone */
 .drop-zone {
   border: 2px dashed var(--border);
   border-radius: var(--radius-lg);
@@ -242,6 +248,27 @@ body {
   color: var(--accent-hover);
 }
 
+/* Warning Banner */
+.warning-banner {
+  background: var(--warning-soft);
+  border: 1px solid rgba(253, 203, 110, 0.3);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
+
+.warning-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.82rem;
+  color: var(--warning);
+}
+
+.warning-icon {
+  flex-shrink: 0;
+}
+
+/* File Info */
 .file-info {
   display: flex;
   align-items: center;
@@ -296,6 +323,7 @@ body {
   display: block;
 }
 
+/* Radio Cards */
 .radio-group {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -341,6 +369,157 @@ body {
   margin-top: 2px;
 }
 
+/* Encryption Controls */
+.encryption-controls {
+  padding-top: 2px;
+}
+
+.encrypt-toggle-row {
+  margin-bottom: 10px;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+  transition: color var(--duration) var(--ease);
+}
+
+.toggle-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  transition: all var(--duration) var(--ease);
+  cursor: pointer;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  left: 2px;
+  top: 2px;
+  transition: all var(--duration) var(--ease);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--encrypt-soft);
+  border-color: var(--encrypt-color);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  background: var(--encrypt-color);
+  transform: translateX(18px);
+  box-shadow: 0 0 8px rgba(0, 184, 148, 0.4);
+}
+
+.toggle-switch input:checked ~ .toggle-text,
+.toggle-label:has(input:checked) .toggle-text {
+  color: var(--encrypt-color);
+}
+
+.password-field {
+  animation: fadeUp 200ms var(--ease) both;
+}
+
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-input-wrap .input {
+  padding-right: 36px;
+}
+
+.toggle-pw-btn {
+  position: absolute;
+  right: 4px;
+  color: var(--text-muted);
+}
+
+.password-hint {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Decrypt Prompt */
+.decrypt-prompt {
+  background: var(--bg-secondary);
+  border: 1px solid var(--encrypt-color);
+  border-radius: var(--radius-lg);
+  padding: 28px 24px;
+}
+
+.decrypt-prompt-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+}
+
+.decrypt-icon {
+  color: var(--encrypt-color);
+  margin-bottom: 4px;
+}
+
+.decrypt-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.decrypt-desc {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  max-width: 400px;
+  margin-bottom: 6px;
+}
+
+.decrypt-prompt .password-input-wrap {
+  width: 100%;
+  max-width: 320px;
+}
+
+.decrypt-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+/* Action Buttons */
 .action-buttons {
   display: flex;
   gap: 10px;
@@ -388,6 +567,17 @@ body {
   border-color: var(--border-hover);
 }
 
+.btn-accent {
+  background: var(--encrypt-color);
+  color: #fff;
+}
+
+.btn-accent:hover:not(:disabled) {
+  background: #00a884;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 184, 148, 0.3);
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--text-secondary);
@@ -402,8 +592,9 @@ body {
 .btn-sm { padding: 7px 14px; font-size: 0.78rem; }
 .btn-xs { padding: 4px 10px; font-size: 0.72rem; }
 .btn-danger { color: var(--danger); }
-.btn-danger:hover { background: rgba(225, 112, 85, 0.1); }
+.btn-danger:hover { background: var(--danger-soft); }
 
+/* Inputs */
 .input {
   width: 100%;
   padding: 9px 12px;
@@ -430,6 +621,7 @@ body {
   font-size: 0.78rem;
 }
 
+/* Progress */
 .progress-section {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
@@ -471,6 +663,11 @@ body {
   transition: width 100ms linear;
 }
 
+.transfer-progress {
+  background: linear-gradient(90deg, var(--encrypt-color), var(--accent));
+}
+
+/* Stats Grid */
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -511,6 +708,23 @@ body {
   color: var(--accent);
 }
 
+/* Encryption Badge */
+.encryption-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--encrypt-soft);
+  border: 1px solid rgba(0, 184, 148, 0.3);
+  border-radius: var(--radius);
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--encrypt-color);
+  font-weight: 500;
+  animation: fadeUp 300ms var(--ease) both;
+}
+
+/* Chart */
 .chart-container {
   margin-top: 18px;
   background: var(--bg-elevated);
@@ -539,6 +753,47 @@ body {
   margin-top: 16px;
 }
 
+/* File Transfer Section */
+.transfer-section {
+  animation: fadeUp 300ms var(--ease) both;
+}
+
+.transfer-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.transfer-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--encrypt-color);
+}
+
+.transfer-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.transfer-meta {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.transfer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Room UI */
 .room-actions {
   display: flex;
   flex-direction: column;
@@ -599,6 +854,7 @@ body {
   flex-shrink: 0;
 }
 
+/* Chat */
 .chat-box {
   display: flex;
   flex-direction: column;
@@ -659,6 +915,7 @@ body {
   border-radius: 0;
 }
 
+/* Activity Feed */
 .activity-feed {
   display: flex;
   flex-direction: column;
@@ -701,6 +958,7 @@ body {
   font-family: var(--font-mono);
 }
 
+/* Responsive */
 @media (max-width: 900px) {
   .sidebar {
     display: none;
@@ -739,6 +997,15 @@ body {
   }
 
   .action-buttons .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .result-actions {
+    flex-direction: column;
+  }
+
+  .result-actions .btn {
     width: 100%;
     justify-content: center;
   }

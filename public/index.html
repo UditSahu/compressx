@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CompressX — File Compression Tool</title>
-  <meta name="description" content="Compress files in your browser with hand-built Huffman & LZ77 algorithms. Real-time collaborative workspace.">
-  <meta property="og:title" content="CompressX — File Compression Tool">
-  <meta property="og:description" content="Client-side file compression with custom algorithms and live collaboration.">
+  <title>CompressX — File Compression & Encryption Tool</title>
+  <meta name="description" content="Compress and encrypt files in your browser with hand-built Huffman & LZ77 algorithms. Real-time collaborative workspace with end-to-end file transfer.">
+  <meta property="og:title" content="CompressX — File Compression & Encryption Tool">
+  <meta property="og:description" content="Client-side file compression & AES-256 encryption with custom algorithms and live collaboration.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -54,9 +54,21 @@
               <path d="M8 32v4a4 4 0 004 4h24a4 4 0 004-4v-4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <p class="drop-text">Drop a file here or <button class="link-btn" id="browseBtn">browse</button></p>
-            <p class="drop-hint">Max 50 MB • Any file type</p>
+            <p class="drop-hint">Max 50 MB • .compx / .compx.enc files for decompression</p>
           </div>
           <input type="file" id="fileInput" hidden>
+        </div>
+      </section>
+
+      <!-- File Type Warning Banner -->
+      <section class="section warning-banner hidden" id="fileWarning">
+        <div class="warning-content">
+          <svg class="warning-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span id="fileWarningText">This file type is already compressed. Compression may increase file size.</span>
         </div>
       </section>
 
@@ -100,6 +112,38 @@
             </div>
           </div>
 
+          <!-- Encryption Controls -->
+          <div class="encryption-controls" id="encryptionControls">
+            <label class="label">Security</label>
+            <div class="encrypt-toggle-row">
+              <label class="toggle-label" for="encryptToggle">
+                <div class="toggle-switch">
+                  <input type="checkbox" id="encryptToggle">
+                  <span class="toggle-slider"></span>
+                </div>
+                <span class="toggle-text">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                  </svg>
+                  AES-256 Encryption
+                </span>
+              </label>
+            </div>
+            <div class="password-field hidden" id="passwordField">
+              <div class="password-input-wrap">
+                <input type="password" class="input input-sm" id="passwordInput" placeholder="Enter encryption password" autocomplete="off">
+                <button class="btn btn-ghost btn-xs toggle-pw-btn" id="togglePassword" type="button" title="Show/hide password">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </svg>
+                </button>
+              </div>
+              <p class="password-hint">Used for compression & decompression of this file</p>
+            </div>
+          </div>
+
           <div class="action-buttons">
             <button class="btn btn-primary" id="compressBtn" disabled>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
@@ -109,6 +153,25 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
               Decompress
             </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Decompression Password Prompt -->
+      <section class="section decrypt-prompt hidden" id="decryptPrompt">
+        <div class="decrypt-prompt-content">
+          <svg class="decrypt-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <h3 class="decrypt-title">Encrypted File</h3>
+          <p class="decrypt-desc">This file is encrypted. Enter the password to decrypt and decompress.</p>
+          <div class="password-input-wrap">
+            <input type="password" class="input" id="decryptPasswordInput" placeholder="Enter decryption password" autocomplete="off">
+          </div>
+          <div class="decrypt-actions">
+            <button class="btn btn-primary" id="decryptSubmitBtn">Decrypt & Decompress</button>
+            <button class="btn btn-ghost" id="decryptCancelBtn">Cancel</button>
           </div>
         </div>
       </section>
@@ -155,6 +218,15 @@
           </div>
         </div>
 
+        <!-- Encryption badge -->
+        <div class="encryption-badge hidden" id="encryptionBadge">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <span>Encrypted with AES-256-GCM</span>
+        </div>
+
         <!-- Frequency chart -->
         <div class="chart-container hidden" id="chartContainer">
           <h3 class="chart-title">Byte Frequency Distribution</h3>
@@ -166,7 +238,36 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             Download
           </button>
+          <button class="btn btn-accent hidden" id="sendToRoomBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Send to Room
+          </button>
           <button class="btn btn-ghost" id="newFileBtn">Compress another</button>
+        </div>
+      </section>
+
+      <!-- Incoming File Transfer -->
+      <section class="section transfer-section hidden" id="transferSection">
+        <div class="transfer-card">
+          <div class="transfer-header">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span class="transfer-title" id="transferTitle">Receiving file...</span>
+          </div>
+          <div class="transfer-meta" id="transferMeta"></div>
+          <div class="progress-track">
+            <div class="progress-bar transfer-progress" id="transferProgress"></div>
+          </div>
+          <div class="transfer-actions hidden" id="transferActions">
+            <button class="btn btn-primary btn-sm" id="transferDownloadBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download Received File
+            </button>
+            <button class="btn btn-ghost btn-sm" id="transferDismissBtn">Dismiss</button>
+          </div>
         </div>
       </section>
 
@@ -181,7 +282,7 @@
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-section">
         <h3 class="sidebar-title">Collaborate</h3>
-        <p class="sidebar-desc">Share a room to see each other's compression results live.</p>
+        <p class="sidebar-desc">Share a room to see each other's compression results live and transfer files end-to-end.</p>
 
         <!-- Not in a room -->
         <div id="roomJoinUI">

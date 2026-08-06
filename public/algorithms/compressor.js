@@ -1,11 +1,21 @@
-const MAGIC = [0x43, 0x4D, 0x50, 0x58];
-const FORMAT_VERSION = 1;
+const MAGIC = [0x43, 0x4D, 0x50, 0x58]; // "CMPX"
+const FORMAT_VERSION = 2; // Bumped for encryption support
 
 const MODE = {
   HUFFMAN: 0,
   LZ77: 1,
   COMBINED: 2
 };
+
+/**
+ * File format (v2):
+ * [0-3]  Magic bytes "CMPX"
+ * [4]    Format version (2)
+ * [5]    Flags byte: bits 0-1 = compression mode, bit 2 = encrypted
+ * [6-7]  Filename length (uint16 BE)
+ * [8+]   Filename bytes
+ * [...]  Compressed payload (optionally encrypted)
+ */
 
 function compress(data, filename, mode, onProgress) {
   const totalStart = performance.now();
@@ -54,13 +64,15 @@ function compress(data, filename, mode, onProgress) {
   }
 
   const filenameBytes = new TextEncoder().encode(filename);
+  // Flags: bits 0-1 = mode, bit 2 = encrypted (0 here, encryption handled separately)
+  const flagsByte = mode & 0x03;
   const headerSize = 4 + 1 + 1 + 2 + filenameBytes.length;
   const output = new Uint8Array(headerSize + result.compressed.length);
   const view = new DataView(output.buffer);
 
   output.set(MAGIC, 0);
   output[4] = FORMAT_VERSION;
-  output[5] = mode;
+  output[5] = flagsByte;
   view.setUint16(6, filenameBytes.length, false);
   output.set(filenameBytes, 8);
   output.set(result.compressed, headerSize);
@@ -82,8 +94,44 @@ function compress(data, filename, mode, onProgress) {
   return { compressed: output, stats: finalStats };
 }
 
+/**
+ * Compress + Encrypt. Compresses first, then encrypts the entire output.
+ * Returns a .compx.enc file.
+ */
+async function compressAndEncrypt(data, filename, mode, password, onProgress) {
+  // Phase 1: Compress (70% of progress)
+  const compressProgress = (p) => { if (onProgress) onProgress(p * 0.7); };
+  const compressResult = compress(data, filename, mode, compressProgress);
+
+  // Phase 2: Encrypt (30% of progress)
+  const encryptProgress = (p) => { if (onProgress) onProgress(0.7 + p * 0.3); };
+  const encryptResult = await self.Encryption.encrypt(compressResult.compressed, password, encryptProgress);
+
+  // Wrap in envelope: [MAGIC:4][VERSION:1][FLAGS:1 with encrypted bit][encrypted payload]
+  const envelopeSize = 4 + 1 + 1 + encryptResult.encrypted.length;
+  const output = new Uint8Array(envelopeSize);
+  output.set(MAGIC, 0);
+  output[4] = FORMAT_VERSION;
+  output[5] = (mode & 0x03) | 0x04; // bit 2 = encrypted
+  output.set(encryptResult.encrypted, 6);
+
+  const finalStats = {
+    ...compressResult.stats,
+    compressedSize: output.length,
+    ratio: ((1 - output.length / data.length) * 100).toFixed(2),
+    encrypted: true,
+    encryptionMethod: encryptResult.stats.method
+  };
+
+  return { compressed: output, stats: finalStats };
+}
+
 function decompress(data, onProgress) {
   const totalStart = performance.now();
+
+  if (data.length < 6) {
+    throw new Error('Invalid file: too short');
+  }
 
   if (data[0] !== MAGIC[0] || data[1] !== MAGIC[1] ||
       data[2] !== MAGIC[2] || data[3] !== MAGIC[3]) {
@@ -91,11 +139,20 @@ function decompress(data, onProgress) {
   }
 
   const version = data[4];
-  if (version !== FORMAT_VERSION) {
+  if (version !== FORMAT_VERSION && version !== 1) {
     throw new Error(`Unsupported format version: ${version}`);
   }
 
-  const mode = data[5];
+  const flags = data[5];
+  const isEncrypted = (flags & 0x04) !== 0;
+
+  if (isEncrypted) {
+    throw new Error('This file is encrypted. Use decryptAndDecompress() with a password.');
+  }
+
+  // For v1 compatibility: flags byte was just the mode
+  const mode = version === 1 ? flags : (flags & 0x03);
+
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const filenameLength = view.getUint16(6, false);
   const filename = new TextDecoder().decode(data.subarray(8, 8 + filenameLength));
@@ -145,9 +202,56 @@ function decompress(data, onProgress) {
   };
 }
 
+/**
+ * Decrypt + Decompress. Decrypts the encrypted envelope, then decompresses.
+ */
+async function decryptAndDecompress(data, password, onProgress) {
+  const totalStart = performance.now();
+
+  if (data.length < 6) {
+    throw new Error('Invalid file: too short');
+  }
+
+  if (data[0] !== MAGIC[0] || data[1] !== MAGIC[1] ||
+      data[2] !== MAGIC[2] || data[3] !== MAGIC[3]) {
+    throw new Error('Invalid .compx.enc file: bad magic bytes');
+  }
+
+  const version = data[4];
+  const flags = data[5];
+  const isEncrypted = (flags & 0x04) !== 0;
+
+  if (!isEncrypted) {
+    throw new Error('This file is not encrypted. Use decompress() instead.');
+  }
+
+  // Phase 1: Decrypt (30% of progress)
+  const encryptedPayload = data.subarray(6);
+  const decryptProgress = (p) => { if (onProgress) onProgress(p * 0.3); };
+  const decryptResult = await self.Encryption.decrypt(encryptedPayload, password, decryptProgress);
+
+  // Phase 2: Decompress the inner .compx data (70% of progress)
+  const innerData = decryptResult.decrypted;
+  const decompressProgress = (p) => { if (onProgress) onProgress(0.3 + p * 0.7); };
+  const decompressResult = decompress(innerData, decompressProgress);
+
+  const totalTime = performance.now() - totalStart;
+
+  return {
+    decompressed: decompressResult.decompressed,
+    filename: decompressResult.filename,
+    stats: {
+      ...decompressResult.stats,
+      encrypted: true,
+      encryptionMethod: 'AES-GCM-256 + PBKDF2',
+      time: totalTime.toFixed(2)
+    }
+  };
+}
+
 if (typeof self !== 'undefined' && typeof module === 'undefined') {
-  self.Compressor = { compress, decompress, MODE };
+  self.Compressor = { compress, decompress, compressAndEncrypt, decryptAndDecompress, MODE };
 }
 if (typeof module !== 'undefined') {
-  module.exports = { compress, decompress, MODE };
+  module.exports = { compress, decompress, compressAndEncrypt, decryptAndDecompress, MODE };
 }

@@ -4,12 +4,38 @@
   let currentFile = null;
   let resultBuffer = null;
   let resultFilename = null;
+  let resultEncrypted = false;
   let worker = null;
+  let receivedFileData = null;
   const ws = new WSClient();
 
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
 
+  // --- Compressed file extensions that won't benefit from further compression ---
+  const COMPRESSED_EXTENSIONS = new Set([
+    '.zip', '.rar', '.7z', '.gz', '.bz2', '.xz', '.lz', '.lzma', '.zst', '.br', '.lz4',
+    '.tar.gz', '.tgz', '.tar.bz2', '.tar.xz',
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.heic', '.heif',
+    '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.webm', '.flv',
+    '.mp3', '.aac', '.ogg', '.opus', '.wma', '.m4a', '.flac',
+    '.woff', '.woff2',
+    '.pdf',
+    '.docx', '.xlsx', '.pptx',
+    '.apk', '.ipa', '.jar',
+    '.dmg', '.iso',
+    '.compx', '.compx.enc'
+  ]);
+
+  function isCompressedFileType(filename) {
+    const lower = filename.toLowerCase();
+    for (const ext of COMPRESSED_EXTENSIONS) {
+      if (lower.endsWith(ext)) return true;
+    }
+    return false;
+  }
+
+  // --- DOM References ---
   const dropZone = $('#dropZone');
   const fileInput = $('#fileInput');
   const browseBtn = $('#browseBtn');
@@ -26,6 +52,7 @@
   const progressLabel = $('#progressLabel');
   const resultsSection = $('#resultsSection');
   const downloadBtn = $('#downloadBtn');
+  const sendToRoomBtn = $('#sendToRoomBtn');
   const newFileBtn = $('#newFileBtn');
   const chartContainer = $('#chartContainer');
   const freqChart = $('#freqChart');
@@ -50,6 +77,32 @@
 
   const connectionStatus = $('#connectionStatus');
 
+  // Encryption
+  const encryptToggle = $('#encryptToggle');
+  const passwordField = $('#passwordField');
+  const passwordInput = $('#passwordInput');
+  const togglePasswordBtn = $('#togglePassword');
+  const encryptionBadge = $('#encryptionBadge');
+
+  // Decrypt prompt
+  const decryptPrompt = $('#decryptPrompt');
+  const decryptPasswordInput = $('#decryptPasswordInput');
+  const decryptSubmitBtn = $('#decryptSubmitBtn');
+  const decryptCancelBtn = $('#decryptCancelBtn');
+
+  // File warning
+  const fileWarning = $('#fileWarning');
+  const fileWarningText = $('#fileWarningText');
+
+  // Transfer
+  const transferSection = $('#transferSection');
+  const transferTitle = $('#transferTitle');
+  const transferMeta = $('#transferMeta');
+  const transferProgress = $('#transferProgress');
+  const transferActions = $('#transferActions');
+  const transferDownloadBtn = $('#transferDownloadBtn');
+  const transferDismissBtn = $('#transferDismissBtn');
+
   function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -63,9 +116,26 @@
     return (ms / 1000).toFixed(2) + ' s';
   }
 
-  function show(el) { el.classList.remove('hidden'); }
-  function hide(el) { el.classList.add('hidden'); }
+  function show(el) { if (el) el.classList.remove('hidden'); }
+  function hide(el) { if (el) el.classList.add('hidden'); }
 
+  // --- Encryption UI ---
+  encryptToggle.addEventListener('change', () => {
+    if (encryptToggle.checked) {
+      show(passwordField);
+      passwordInput.focus();
+    } else {
+      hide(passwordField);
+      passwordInput.value = '';
+    }
+  });
+
+  togglePasswordBtn.addEventListener('click', () => {
+    const type = passwordInput.type === 'password' ? 'text' : 'password';
+    passwordInput.type = type;
+  });
+
+  // --- File Handling ---
   function handleFile(file) {
     if (!file) return;
     if (file.size > 50 * 1024 * 1024) {
@@ -89,21 +159,56 @@
     hide(uploadSection);
     hide(resultsSection);
     hide(progressSection);
+    hide(decryptPrompt);
 
     const isCompx = file.name.endsWith('.compx');
-    compressBtn.disabled = isCompx;
-    decompressBtn.disabled = !isCompx;
+    const isCompxEnc = file.name.endsWith('.compx.enc');
+    const isDecompressable = isCompx || isCompxEnc;
+
+    compressBtn.disabled = isDecompressable;
+    decompressBtn.disabled = !isDecompressable;
+
+    // Show/hide encryption controls for compression
+    if (isDecompressable) {
+      hide($('#encryptionControls'));
+      hide($('.algo-selector'));
+    } else {
+      show($('#encryptionControls'));
+      show($('.algo-selector'));
+    }
+
+    // Check if file type is already compressed
+    if (!isDecompressable && isCompressedFileType(file.name)) {
+      fileWarningText.textContent = `"${getExtension(file.name)}" files are already compressed. Compression may increase file size, but you can still add encryption.`;
+      show(fileWarning);
+    } else {
+      hide(fileWarning);
+    }
+  }
+
+  function getExtension(filename) {
+    const parts = filename.split('.');
+    if (parts.length < 2) return '';
+    return '.' + parts.slice(1).join('.');
   }
 
   function resetUI() {
     currentFile = null;
     resultBuffer = null;
     resultFilename = null;
+    resultEncrypted = false;
     hide(fileControls);
     show(uploadSection);
     hide(resultsSection);
     hide(progressSection);
+    hide(fileWarning);
+    hide(decryptPrompt);
     fileInput.value = '';
+
+    // Reset encryption state
+    encryptToggle.checked = false;
+    hide(passwordField);
+    passwordInput.value = '';
   }
 
   dropZone.addEventListener('click', () => fileInput.click());
@@ -129,14 +234,21 @@
     return parseInt(checked.value, 10);
   }
 
-  function runWorker(action) {
+  // --- Compression / Decompression ---
+  function runWorker(action, password) {
     if (!currentFile) return;
 
     show(progressSection);
     hide(resultsSection);
+    hide(decryptPrompt);
     progressBar.style.width = '0%';
     progressPercent.textContent = '0%';
-    progressLabel.textContent = action === 'compress' ? 'Compressing...' : 'Decompressing...';
+
+    const isEncrypting = action === 'compress' && encryptToggle.checked;
+    const actionLabel = action === 'compress'
+      ? (isEncrypting ? 'Compressing & Encrypting...' : 'Compressing...')
+      : (password ? 'Decrypting & Decompressing...' : 'Decompressing...');
+    progressLabel.textContent = actionLabel;
     compressBtn.disabled = true;
     decompressBtn.disabled = true;
 
@@ -160,12 +272,24 @@
       if (msg.type === 'result') {
         resultBuffer = msg.buffer;
         resultFilename = msg.filename;
+        resultEncrypted = !!(msg.stats && msg.stats.encrypted);
         showResults(msg.stats, action);
 
         if (ws.roomCode) {
           ws.shareResult(msg.stats);
         }
 
+        worker.terminate();
+        worker = null;
+      }
+
+      if (msg.type === 'need_password') {
+        // File is encrypted, show password prompt
+        hide(progressSection);
+        show(decryptPrompt);
+        decryptPasswordInput.focus();
+        compressBtn.disabled = false;
+        decompressBtn.disabled = false;
         worker.terminate();
         worker = null;
       }
@@ -181,15 +305,54 @@
     };
 
     const bufferCopy = currentFile.buffer.slice(0);
-    worker.postMessage(
-      { action, buffer: bufferCopy, filename: currentFile.file.name, mode: getSelectedAlgorithm() },
-      [bufferCopy]
-    );
+    const workerMsg = {
+      action,
+      buffer: bufferCopy,
+      filename: currentFile.file.name,
+      mode: getSelectedAlgorithm(),
+      encrypted: isEncrypting,
+      password: password || (isEncrypting ? passwordInput.value : null)
+    };
+    worker.postMessage(workerMsg, [bufferCopy]);
   }
 
-  compressBtn.addEventListener('click', () => runWorker('compress'));
-  decompressBtn.addEventListener('click', () => runWorker('decompress'));
+  compressBtn.addEventListener('click', () => {
+    if (encryptToggle.checked && !passwordInput.value.trim()) {
+      passwordInput.focus();
+      passwordInput.style.borderColor = 'var(--danger)';
+      setTimeout(() => { passwordInput.style.borderColor = ''; }, 2000);
+      return;
+    }
+    runWorker('compress');
+  });
 
+  decompressBtn.addEventListener('click', () => {
+    runWorker('decompress');
+  });
+
+  // Decrypt prompt handlers
+  decryptSubmitBtn.addEventListener('click', () => {
+    const pw = decryptPasswordInput.value;
+    if (!pw) {
+      decryptPasswordInput.focus();
+      decryptPasswordInput.style.borderColor = 'var(--danger)';
+      setTimeout(() => { decryptPasswordInput.style.borderColor = ''; }, 2000);
+      return;
+    }
+    hide(decryptPrompt);
+    runWorker('decompress', pw);
+  });
+
+  decryptPasswordInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') decryptSubmitBtn.click();
+  });
+
+  decryptCancelBtn.addEventListener('click', () => {
+    hide(decryptPrompt);
+    decryptPasswordInput.value = '';
+  });
+
+  // --- Results ---
   function showResults(stats, action) {
     hide(progressSection);
     show(resultsSection);
@@ -201,11 +364,25 @@
     $('#statSpeed').textContent = stats.speed ? stats.speed + ' MB/s' : '—';
     $('#statAlgo').textContent = stats.mode || stats.algorithm || '—';
 
+    // Encryption badge
+    if (stats.encrypted) {
+      show(encryptionBadge);
+    } else {
+      hide(encryptionBadge);
+    }
+
     if (stats.frequencyTable) {
       show(chartContainer);
       drawFrequencyChart(stats.frequencyTable);
     } else {
       hide(chartContainer);
+    }
+
+    // Show "Send to Room" if in a room
+    if (ws.roomCode && resultBuffer) {
+      show(sendToRoomBtn);
+    } else {
+      hide(sendToRoomBtn);
     }
   }
 
@@ -267,6 +444,35 @@
     URL.revokeObjectURL(url);
   });
 
+  // --- Send to Room ---
+  sendToRoomBtn.addEventListener('click', async () => {
+    if (!ws.roomCode || !resultBuffer) return;
+
+    sendToRoomBtn.disabled = true;
+    sendToRoomBtn.textContent = 'Sending...';
+
+    try {
+      const fileData = new Uint8Array(resultBuffer);
+      await ws.sendFile(fileData, resultFilename, resultEncrypted, (progress) => {
+        sendToRoomBtn.textContent = `Sending ${Math.round(progress * 100)}%...`;
+      });
+      sendToRoomBtn.textContent = 'Sent ✓';
+      setTimeout(() => {
+        sendToRoomBtn.disabled = false;
+        sendToRoomBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          Send to Room`;
+      }, 2000);
+    } catch (err) {
+      alert('Transfer error: ' + err.message);
+      sendToRoomBtn.disabled = false;
+      sendToRoomBtn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        Send to Room`;
+    }
+  });
+
+  // --- WebSocket Events ---
   ws.on('connected', () => {
     connectionStatus.className = 'connection-status connected';
     connectionStatus.querySelector('.status-text').textContent = 'Connected';
@@ -321,6 +527,59 @@
     addChatMessage(msg.userName, msg.text, msg.userColor, msg.self);
   });
 
+  // --- File Transfer Events ---
+  ws.on('file:transfer:start', (msg) => {
+    show(transferSection);
+    hide(transferActions);
+    transferTitle.textContent = `Receiving file from ${escapeHtml(msg.userName)}...`;
+    transferMeta.textContent = `${escapeHtml(msg.fileName)} • ${formatBytes(msg.fileSize)}${msg.encrypted ? ' • Encrypted' : ''}`;
+    transferProgress.style.width = '0%';
+    receivedFileData = null;
+
+    addActivity(msg.userName, `is sending <strong>${escapeHtml(msg.fileName)}</strong>`, msg.userId);
+  });
+
+  ws.on('file:transfer:progress', (msg) => {
+    const pct = Math.round((msg.received / msg.total) * 100);
+    transferProgress.style.width = pct + '%';
+    transferTitle.textContent = `Receiving file... ${pct}%`;
+  });
+
+  ws.on('file:transfer:complete', (msg) => {
+    transferTitle.textContent = `File received from ${escapeHtml(msg.userName)}`;
+    transferMeta.textContent = `${escapeHtml(msg.fileName)} • ${formatBytes(msg.fileSize)}${msg.encrypted ? ' • Encrypted' : ''}`;
+    transferProgress.style.width = '100%';
+    show(transferActions);
+
+    receivedFileData = { data: msg.data, fileName: msg.fileName };
+
+    addActivity(msg.userName, `sent <strong>${escapeHtml(msg.fileName)}</strong> (${formatBytes(msg.fileSize)})`, null);
+    addChatSystem(`📁 ${msg.userName} sent ${msg.fileName}`);
+  });
+
+  ws.on('file:transfer:error', (msg) => {
+    transferTitle.textContent = 'Transfer failed';
+    transferMeta.textContent = msg.message;
+    setTimeout(() => hide(transferSection), 5000);
+  });
+
+  transferDownloadBtn.addEventListener('click', () => {
+    if (!receivedFileData) return;
+    const blob = new Blob([receivedFileData.data]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = receivedFileData.fileName;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  transferDismissBtn.addEventListener('click', () => {
+    hide(transferSection);
+    receivedFileData = null;
+  });
+
+  // --- Room UI ---
   createRoomBtn.addEventListener('click', () => {
     ws.createRoom(nameInput.value.trim() || undefined);
   });
@@ -366,15 +625,23 @@
     updateMembers(users);
     show(activitySection);
     addChatSystem('You joined room ' + code);
+
+    // Show send-to-room button if there's a result
+    if (resultBuffer) {
+      show(sendToRoomBtn);
+    }
   }
 
   function exitRoom() {
     show(roomJoinUI);
     hide(roomActiveUI);
     hide(activitySection);
+    hide(sendToRoomBtn);
+    hide(transferSection);
     membersList.innerHTML = '';
     chatMessages.innerHTML = '';
     activityFeed.innerHTML = '';
+    receivedFileData = null;
   }
 
   function updateMembers(users) {
