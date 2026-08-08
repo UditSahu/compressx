@@ -170,11 +170,13 @@ class WSClient {
   /**
    * Send a file (already compressed/encrypted Uint8Array) to room members.
    * Splits into 64KB chunks for WebSocket transmission.
+   * Uses drain-based backpressure instead of fixed delays for maximum speed.
    */
   async sendFile(fileData, fileName, isEncrypted, onProgress) {
     if (!this.roomCode) throw new Error('Not in a room');
 
     const CHUNK_SIZE = 64 * 1024; // 64 KB
+    const BUFFER_THRESHOLD = 256 * 1024; // Pause sending when buffer > 256KB
     const totalChunks = Math.ceil(fileData.length / CHUNK_SIZE);
     const transferId = `${this.userId}-${++this._transferCounter}`;
 
@@ -210,9 +212,19 @@ class WSClient {
         onProgress((i + 1) / totalChunks);
       }
 
-      // Small delay between chunks to avoid overwhelming the connection
-      if (i < totalChunks - 1) {
-        await new Promise(r => setTimeout(r, 5));
+      // Drain-based backpressure: only pause when WebSocket buffer is full.
+      // This is much faster than a fixed 5ms delay between every chunk.
+      if (this.ws && this.ws.bufferedAmount > BUFFER_THRESHOLD) {
+        await new Promise(resolve => {
+          const check = () => {
+            if (!this.ws || this.ws.bufferedAmount <= BUFFER_THRESHOLD) {
+              resolve();
+            } else {
+              setTimeout(check, 10);
+            }
+          };
+          setTimeout(check, 10);
+        });
       }
     }
 
@@ -244,10 +256,13 @@ class WSClient {
     if (data.length < 40) return; // too small for header
 
     // Parse header: [transferId:36][chunkIndex:4][chunkData]
-    const transferIdStr = new TextDecoder().decode(data.subarray(0, 36)).trim();
+    const transferIdStr = new TextDecoder().decode(data.slice(0, 36)).trim();
     const dv = new DataView(data.buffer, data.byteOffset + 36, 4);
     const chunkIndex = dv.getUint32(0, false);
-    const chunkData = data.subarray(40);
+    // CRITICAL: Use slice() not subarray() to copy the data.
+    // subarray() returns a view into the same ArrayBuffer, which the
+    // WebSocket implementation may recycle/overwrite for subsequent messages.
+    const chunkData = data.slice(40);
 
     const transfer = this._incomingTransfers.get(transferIdStr);
     if (!transfer) return; // unknown transfer

@@ -7,6 +7,12 @@
   let resultEncrypted = false;
   let worker = null;
   let receivedFileData = null;
+  let progressRAF = null;
+  let lastProgressPct = -1;
+  let mediaType = null; // 'image', 'video', or null for regular files
+  let mediaWorker = null;
+  let decompressedVideoFrames = null;
+  let videoPlayInterval = null;
   const ws = new WSClient();
 
   const $ = (s) => document.querySelector(s);
@@ -24,8 +30,14 @@
     '.docx', '.xlsx', '.pptx',
     '.apk', '.ipa', '.jar',
     '.dmg', '.iso',
-    '.compx', '.compx.enc'
+    '.compx', '.compx.enc',
+    '.cimg', '.cvid'
   ]);
+
+  const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif', '.avif']);
+  const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.m4v', '.ogv']);
+  const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/tiff', 'image/avif']);
+  const VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/avi', 'video/quicktime', 'video/x-matroska', 'video/x-flv', 'video/x-ms-wmv', 'video/ogg']);
 
   function isCompressedFileType(filename) {
     const lower = filename.toLowerCase();
@@ -103,6 +115,25 @@
   const transferDownloadBtn = $('#transferDownloadBtn');
   const transferDismissBtn = $('#transferDismissBtn');
 
+  // Media controls
+  const mediaControls = $('#mediaControls');
+  const mediaFileName = $('#mediaFileName');
+  const mediaFileSize = $('#mediaFileSize');
+  const clearMediaFile = $('#clearMediaFile');
+  const qualitySlider = $('#qualitySlider');
+  const qualityValue = $('#qualityValue');
+  const videoSettings = $('#videoSettings');
+  const mediaCompressBtn = $('#mediaCompressBtn');
+  const mediaDecompressBtn = $('#mediaDecompressBtn');
+  const mediaPreview = $('#mediaPreview');
+  const previewCanvas = $('#previewCanvas');
+  const algoInfoText = $('#algoInfoText');
+  const mediaResultPreview = $('#mediaResultPreview');
+  const resultPreviewCanvas = $('#resultPreviewCanvas');
+  const videoPlayback = $('#videoPlayback');
+  const playVideoBtn = $('#playVideoBtn');
+  const videoFrameInfo = $('#videoFrameInfo');
+
   function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -143,12 +174,86 @@
       return;
     }
 
+    // Detect media type
+    const ext = getExtension(file.name).toLowerCase();
+    const mime = file.type.toLowerCase();
+
+    if (file.name.endsWith('.cimg')) {
+      mediaType = 'image-decompress';
+    } else if (file.name.endsWith('.cvid')) {
+      mediaType = 'video-decompress';
+    } else if (IMAGE_MIMES.has(mime) || IMAGE_EXTENSIONS.has(ext)) {
+      mediaType = 'image';
+    } else if (VIDEO_MIMES.has(mime) || VIDEO_EXTENSIONS.has(ext)) {
+      mediaType = 'video';
+    } else {
+      mediaType = null;
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
       currentFile = { file, buffer: reader.result };
-      showFileInfo(file);
+
+      if (mediaType) {
+        showMediaFileInfo(file);
+      } else {
+        showFileInfo(file);
+      }
     };
     reader.readAsArrayBuffer(file);
+  }
+
+  function showMediaFileInfo(file) {
+    mediaFileName.textContent = file.name;
+    mediaFileSize.textContent = formatBytes(file.size);
+
+    hide(uploadSection);
+    hide(fileControls);
+    hide(resultsSection);
+    hide(progressSection);
+    show(mediaControls);
+
+    const isDecomp = mediaType === 'image-decompress' || mediaType === 'video-decompress';
+
+    if (isDecomp) {
+      hide(mediaCompressBtn);
+      show(mediaDecompressBtn);
+      hide(qualitySlider.closest('.media-setting-group'));
+      hide(videoSettings);
+      algoInfoText.textContent = mediaType === 'image-decompress'
+        ? 'Decompress .cimg → Huffman → RLE → IDCT → Image'
+        : 'Decompress .cvid → Reconstruct I/P-Frames → Video';
+    } else {
+      show(mediaCompressBtn);
+      hide(mediaDecompressBtn);
+      show(qualitySlider.closest('.media-setting-group'));
+
+      if (mediaType === 'video') {
+        show(videoSettings);
+        algoInfoText.textContent = 'I/P-Frame + DCT → Quantization → Zigzag → RLE → Huffman';
+      } else {
+        hide(videoSettings);
+        algoInfoText.textContent = 'DCT → Quantization → Zigzag → RLE → Huffman';
+      }
+
+      // Show image preview
+      if (mediaType === 'image') {
+        showImagePreview(file);
+      }
+    }
+  }
+
+  function showImagePreview(file) {
+    const img = new Image();
+    img.onload = () => {
+      previewCanvas.width = img.width;
+      previewCanvas.height = img.height;
+      const ctx = previewCanvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      show(mediaPreview);
+      URL.revokeObjectURL(img.src);
+    };
+    img.src = URL.createObjectURL(file);
   }
 
   function showFileInfo(file) {
@@ -160,6 +265,7 @@
     hide(resultsSection);
     hide(progressSection);
     hide(decryptPrompt);
+    hide(mediaControls);
 
     const isCompx = file.name.endsWith('.compx');
     const isCompxEnc = file.name.endsWith('.compx.enc');
@@ -197,7 +303,15 @@
     resultBuffer = null;
     resultFilename = null;
     resultEncrypted = false;
+    mediaType = null;
+    decompressedVideoFrames = null;
+    if (videoPlayInterval) { clearInterval(videoPlayInterval); videoPlayInterval = null; }
+    if (mediaWorker) { mediaWorker.terminate(); mediaWorker = null; }
     hide(fileControls);
+    hide(mediaControls);
+    hide(mediaPreview);
+    hide(mediaResultPreview);
+    hide(videoPlayback);
     show(uploadSection);
     hide(resultsSection);
     hide(progressSection);
@@ -227,6 +341,7 @@
   });
 
   clearFileBtn.addEventListener('click', resetUI);
+  clearMediaFile.addEventListener('click', resetUI);
   newFileBtn.addEventListener('click', resetUI);
 
   function getSelectedAlgorithm() {
@@ -265,8 +380,18 @@
 
       if (msg.type === 'progress') {
         const pct = Math.round(msg.value * 100);
-        progressBar.style.width = pct + '%';
-        progressPercent.textContent = pct + '%';
+        // Throttle progress DOM updates via rAF to reduce layout thrashing.
+        // Only schedule if not already pending and value actually changed.
+        if (!progressRAF && pct !== lastProgressPct) {
+          lastProgressPct = pct;
+          progressRAF = requestAnimationFrame(() => {
+            progressBar.style.width = lastProgressPct + '%';
+            progressPercent.textContent = lastProgressPct + '%';
+            progressRAF = null;
+          });
+        } else {
+          lastProgressPct = pct;
+        }
       }
 
       if (msg.type === 'result') {
@@ -699,6 +824,305 @@
     if (window.innerWidth <= 900) {
       sidebar.classList.toggle('mobile-open');
     }
+  });
+
+  // ═══════════════════════════════════════════════════
+  // MEDIA COMPRESSION / DECOMPRESSION
+  // ═══════════════════════════════════════════════════
+
+  // Quality slider
+  qualitySlider.addEventListener('input', () => {
+    qualityValue.textContent = qualitySlider.value;
+  });
+
+  // --- Image Compression ---
+  mediaCompressBtn.addEventListener('click', () => {
+    if (!currentFile) return;
+
+    if (mediaType === 'image') {
+      compressImage();
+    } else if (mediaType === 'video') {
+      compressVideo();
+    }
+  });
+
+  function compressImage() {
+    const quality = parseInt(qualitySlider.value, 10);
+    const file = currentFile.file;
+
+    show(progressSection);
+    progressBar.style.width = '0%';
+    progressPercent.textContent = '0%';
+    progressLabel.textContent = 'Compressing image (DCT)...';
+
+    // Load image pixels via Canvas (I/O only)
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, img.width, img.height);
+      URL.revokeObjectURL(img.src);
+
+      // Run compression in worker
+      if (mediaWorker) mediaWorker.terminate();
+      mediaWorker = new Worker('workers/media.worker.js');
+
+      mediaWorker.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'progress') {
+          const pct = Math.round(msg.value * 100);
+          progressBar.style.width = pct + '%';
+          progressPercent.textContent = pct + '%';
+        }
+        if (msg.type === 'result') {
+          resultBuffer = msg.buffer;
+          resultFilename = msg.filename;
+          resultEncrypted = false;
+          showResults(msg.stats, 'compress');
+          mediaWorker.terminate();
+          mediaWorker = null;
+        }
+        if (msg.type === 'error') {
+          alert('Error: ' + msg.message);
+          hide(progressSection);
+          mediaWorker.terminate();
+          mediaWorker = null;
+        }
+      };
+
+      const pixelBuffer = imageData.data.buffer.slice(0);
+      mediaWorker.postMessage({
+        action: 'compress-image',
+        data: {
+          pixels: pixelBuffer,
+          width: img.width,
+          height: img.height,
+          quality,
+          filename: file.name
+        }
+      }, [pixelBuffer]);
+    };
+    img.src = URL.createObjectURL(file);
+  }
+
+  // --- Video Compression ---
+  function compressVideo() {
+    const quality = parseInt(qualitySlider.value, 10);
+    const fps = parseInt($('#videoFps').value, 10);
+    const maxRes = parseInt($('#videoResolution').value, 10);
+    const gopInterval = parseInt($('#gopInterval').value, 10);
+    const maxFrames = parseInt($('#maxFrames').value, 10);
+    const file = currentFile.file;
+
+    show(progressSection);
+    progressBar.style.width = '0%';
+    progressPercent.textContent = '0%';
+    progressLabel.textContent = 'Extracting frames...';
+
+    // Extract frames in main thread (needs DOM)
+    VideoCompressor.extractFrames(file, {
+      fps,
+      maxWidth: maxRes * (16/9),
+      maxHeight: maxRes,
+      maxFrames
+    }, (p) => {
+      const pct = Math.round(p * 30);
+      progressBar.style.width = pct + '%';
+      progressPercent.textContent = pct + '%';
+    }).then((frameData) => {
+      progressLabel.textContent = 'Compressing video (I/P-frames + DCT)...';
+
+      // Send frames to worker for compression
+      if (mediaWorker) mediaWorker.terminate();
+      mediaWorker = new Worker('workers/media.worker.js');
+
+      mediaWorker.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'progress') {
+          const pct = Math.round(msg.value * 100);
+          progressBar.style.width = pct + '%';
+          progressPercent.textContent = pct + '%';
+        }
+        if (msg.type === 'result') {
+          resultBuffer = msg.buffer;
+          resultFilename = msg.filename;
+          resultEncrypted = false;
+          showResults(msg.stats, 'compress');
+          mediaWorker.terminate();
+          mediaWorker = null;
+        }
+        if (msg.type === 'error') {
+          alert('Error: ' + msg.message);
+          hide(progressSection);
+          mediaWorker.terminate();
+          mediaWorker = null;
+        }
+      };
+
+      // Transfer frame buffers to worker
+      const frameBuffers = frameData.frames.map(f => f.buffer.slice(0));
+      const transfers = frameBuffers.map(b => b);
+
+      mediaWorker.postMessage({
+        action: 'compress-video-frames',
+        data: {
+          frames: frameBuffers,
+          width: frameData.width,
+          height: frameData.height,
+          fps: frameData.fps,
+          quality,
+          gopInterval,
+          filename: file.name
+        }
+      }, transfers);
+    }).catch((err) => {
+      alert('Video error: ' + err.message);
+      hide(progressSection);
+    });
+  }
+
+  // --- Media Decompression ---
+  mediaDecompressBtn.addEventListener('click', () => {
+    if (!currentFile) return;
+
+    if (mediaType === 'image-decompress') {
+      decompressImage();
+    } else if (mediaType === 'video-decompress') {
+      decompressVideo();
+    }
+  });
+
+  function decompressImage() {
+    show(progressSection);
+    progressBar.style.width = '0%';
+    progressPercent.textContent = '0%';
+    progressLabel.textContent = 'Decompressing image...';
+
+    if (mediaWorker) mediaWorker.terminate();
+    mediaWorker = new Worker('workers/media.worker.js');
+
+    mediaWorker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'progress') {
+        const pct = Math.round(msg.value * 100);
+        progressBar.style.width = pct + '%';
+        progressPercent.textContent = pct + '%';
+      }
+      if (msg.type === 'result') {
+        // Show decompressed image in preview
+        const pixels = new Uint8ClampedArray(msg.pixels);
+        const w = msg.width;
+        const h = msg.height;
+
+        resultPreviewCanvas.width = w;
+        resultPreviewCanvas.height = h;
+        const ctx = resultPreviewCanvas.getContext('2d');
+        const imgData = new ImageData(pixels, w, h);
+        ctx.putImageData(imgData, 0, 0);
+
+        // Create downloadable PNG
+        resultPreviewCanvas.toBlob((blob) => {
+          resultBuffer = null;
+          resultFilename = msg.filename;
+          resultEncrypted = false;
+
+          // Store blob for download
+          const reader = new FileReader();
+          reader.onload = () => {
+            resultBuffer = reader.result;
+            showResults(msg.stats, 'decompress');
+            show(mediaResultPreview);
+          };
+          reader.readAsArrayBuffer(blob);
+        }, 'image/png');
+
+        mediaWorker.terminate();
+        mediaWorker = null;
+      }
+      if (msg.type === 'error') {
+        alert('Error: ' + msg.message);
+        hide(progressSection);
+        mediaWorker.terminate();
+        mediaWorker = null;
+      }
+    };
+
+    const bufferCopy = currentFile.buffer.slice(0);
+    mediaWorker.postMessage({
+      action: 'decompress-image',
+      data: { buffer: bufferCopy, filename: currentFile.file.name }
+    }, [bufferCopy]);
+  }
+
+  function decompressVideo() {
+    show(progressSection);
+    progressBar.style.width = '0%';
+    progressPercent.textContent = '0%';
+    progressLabel.textContent = 'Decompressing video...';
+
+    // Video decompression needs ImageCompressor (main thread for now)
+    const data = new Uint8Array(currentFile.buffer);
+    try {
+      const result = VideoCompressor.decode(data, (p) => {
+        const pct = Math.round(p * 100);
+        progressBar.style.width = pct + '%';
+        progressPercent.textContent = pct + '%';
+      });
+
+      decompressedVideoFrames = result;
+
+      // Show first frame
+      if (result.frames.length > 0) {
+        resultPreviewCanvas.width = result.width;
+        resultPreviewCanvas.height = result.height;
+        const ctx = resultPreviewCanvas.getContext('2d');
+        const imgData = new ImageData(result.frames[0], result.width, result.height);
+        ctx.putImageData(imgData, 0, 0);
+      }
+
+      show(mediaResultPreview);
+      show(videoPlayback);
+      videoFrameInfo.textContent = `${result.frames.length} frames @ ${result.fps}fps`;
+
+      resultBuffer = currentFile.buffer;
+      resultFilename = currentFile.file.name.replace(/\.cvid$/, '_frames.cvid');
+      showResults(result.stats, 'decompress');
+
+    } catch (err) {
+      alert('Decompression error: ' + err.message);
+      hide(progressSection);
+    }
+  }
+
+  // Video playback
+  playVideoBtn.addEventListener('click', () => {
+    if (!decompressedVideoFrames || !decompressedVideoFrames.frames.length) return;
+
+    const { frames, width, height, fps } = decompressedVideoFrames;
+    const ctx = resultPreviewCanvas.getContext('2d');
+    let frameIdx = 0;
+
+    if (videoPlayInterval) {
+      clearInterval(videoPlayInterval);
+      videoPlayInterval = null;
+      playVideoBtn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
+      return;
+    }
+
+    playVideoBtn.querySelector('svg').innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+
+    videoPlayInterval = setInterval(() => {
+      if (frameIdx >= frames.length) {
+        frameIdx = 0; // Loop
+      }
+      const imgData = new ImageData(new Uint8ClampedArray(frames[frameIdx]), width, height);
+      ctx.putImageData(imgData, 0, 0);
+      videoFrameInfo.textContent = `Frame ${frameIdx + 1}/${frames.length} @ ${fps}fps`;
+      frameIdx++;
+    }, 1000 / fps);
   });
 
   ws.connect();

@@ -2,19 +2,23 @@ const WINDOW_SIZE = 4096;
 const LOOKAHEAD_SIZE = 258;
 const MIN_MATCH_LENGTH = 3;
 const MAX_ENCODED_LENGTH = MIN_MATCH_LENGTH + 15; // 18 bytes max per token
-const HASH_SIZE = 4096;
+const HASH_SIZE = 8192;
 const HASH_MASK = HASH_SIZE - 1;
 
+/**
+ * Improved 3-byte hash with better bit mixing to reduce collisions.
+ * Uses XOR-shift pattern for more uniform distribution across the table.
+ */
 function hash3(data, pos) {
   if (pos + 2 >= data.length) return 0;
-  return ((data[pos] << 8) ^ (data[pos + 1] << 4) ^ data[pos + 2]) & HASH_MASK;
+  return ((data[pos] << 10) ^ (data[pos + 1] << 5) ^ data[pos + 2]) & HASH_MASK;
 }
 
 /**
  * Find best match using hash chains.
  * Uses a proper prev[] array sized to WINDOW_SIZE to avoid chain table collisions.
  */
-function findMatch(data, pos, hashTable, prevTable) {
+function findMatch(data, pos, hashTable, prevTable, maxChains) {
   let bestOffset = 0;
   let bestLength = 0;
 
@@ -22,8 +26,10 @@ function findMatch(data, pos, hashTable, prevTable) {
 
   const h = hash3(data, pos);
   let candidate = hashTable[h];
-  const minPos = Math.max(0, pos - WINDOW_SIZE);
-  let chainsLeft = 64;
+  // minPos must ensure offset (pos - candidate) fits in 12 bits (max 0xFFF = 4095).
+  // Using pos - WINDOW_SIZE would allow offset = WINDOW_SIZE = 4096 which overflows.
+  const minPos = Math.max(0, pos - WINDOW_SIZE + 1);
+  let chainsLeft = maxChains;
 
   while (candidate >= minPos && candidate < pos && chainsLeft-- > 0) {
     if (data[candidate + bestLength] === data[pos + bestLength] &&
@@ -81,6 +87,9 @@ function lz77Encode(data, onProgress) {
   // prev[] is indexed by (pos % WINDOW_SIZE), stores previous chain link
   const prevTable = new Int32Array(WINDOW_SIZE).fill(-1);
 
+  // Dynamic chain depth: use more chains for larger files where it pays off
+  const maxChains = data.length > 51200 ? 128 : 64;
+
   const tokens = [];
   let pos = 0;
   const progressStep = Math.max(1, Math.floor(data.length / 50));
@@ -88,9 +97,30 @@ function lz77Encode(data, onProgress) {
   let literalCount = 0;
 
   while (pos < data.length) {
-    const match = findMatch(data, pos, hashTable, prevTable);
+    const match = findMatch(data, pos, hashTable, prevTable, maxChains);
 
     if (match.length >= MIN_MATCH_LENGTH) {
+      // --- Lazy evaluation ---
+      // Check if the NEXT position has a strictly longer match.
+      // If so, emit current byte as literal and use the longer match instead.
+      // This is the technique used by gzip/deflate and significantly
+      // improves compression ratios on structured/text data.
+      if (match.length < LOOKAHEAD_SIZE && pos + 1 < data.length) {
+        // Speculatively insert current position and check next
+        insertHash(data, pos, hashTable, prevTable);
+        const nextMatch = findMatch(data, pos + 1, hashTable, prevTable, maxChains);
+
+        if (nextMatch.length > match.length + 1) {
+          // Next position has a meaningfully longer match — emit literal, defer
+          tokens.push({ type: 0, value: data[pos] });
+          literalCount++;
+          pos++;
+          // Let the main loop pick up nextMatch on next iteration
+          continue;
+        }
+      }
+
+      // Commit to the current match
       // Split long matches into multiple tokens to avoid truncation.
       // Each token can encode at most MAX_ENCODED_LENGTH (18) bytes.
       let remaining = match.length;
@@ -108,9 +138,6 @@ function lz77Encode(data, onProgress) {
 
         pos += tokenLen;
         remaining -= tokenLen;
-        // The offset stays the SAME for continuation tokens.
-        // After advancing pos by tokenLen, the source data also advanced
-        // by the same amount, so the distance remains match.offset.
       }
 
       // Handle leftover bytes that are too short for a match token
@@ -176,7 +203,10 @@ function lz77Encode(data, onProgress) {
         // Encode: length is always (actualLen - MIN_MATCH_LENGTH), fits in 4 bits (0-15)
         // Offset fits in 12 bits (0-4095), matching WINDOW_SIZE
         const len = token.length - MIN_MATCH_LENGTH;
-        const off = Math.min(token.offset, 0xFFF); // clamp to 12 bits
+        const off = token.offset;
+        if (off > 0xFFF || off <= 0) {
+          throw new Error(`LZ77 encode error: offset ${off} out of 12-bit range at token index ${j}`);
+        }
         output[writePos++] = ((off >> 8) & 0x0F) | ((len & 0x0F) << 4);
         output[writePos++] = off & 0xFF;
       }

@@ -9,6 +9,7 @@
   <meta property="og:description" content="Client-side file compression & AES-256 encryption with custom algorithms and live collaboration.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" href="https://fonts.gstatic.com/s/inter/v18/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuLyfAZ9hiA.woff2" as="font" type="font/woff2" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -54,7 +55,7 @@
               <path d="M8 32v4a4 4 0 004 4h24a4 4 0 004-4v-4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <p class="drop-text">Drop a file here or <button class="link-btn" id="browseBtn">browse</button></p>
-            <p class="drop-hint">Max 50 MB • .compx / .compx.enc files for decompression</p>
+            <p class="drop-hint">Files, images, or videos • Max 50 MB • .compx / .cimg / .cvid for decompression</p>
           </div>
           <input type="file" id="fileInput" hidden>
         </div>
@@ -157,6 +158,111 @@
         </div>
       </section>
 
+      <!-- Media Compression Controls (shown for images/videos) -->
+      <section class="section media-controls hidden" id="mediaControls">
+        <div class="file-info" id="mediaFileInfo">
+          <div class="file-icon media-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+          </div>
+          <div class="file-meta">
+            <span class="file-name" id="mediaFileName">—</span>
+            <span class="file-size" id="mediaFileSize">—</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="clearMediaFile" title="Remove file">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <div class="media-settings">
+          <!-- Quality Slider -->
+          <div class="media-setting-group">
+            <label class="label">Quality</label>
+            <div class="slider-row">
+              <input type="range" class="quality-slider" id="qualitySlider" min="1" max="100" value="75">
+              <span class="slider-value" id="qualityValue">75</span>
+            </div>
+            <div class="slider-labels">
+              <span>Smaller file</span>
+              <span>Better quality</span>
+            </div>
+          </div>
+
+          <!-- Video-specific settings -->
+          <div class="media-setting-group hidden" id="videoSettings">
+            <label class="label">Video Settings</label>
+            <div class="video-options">
+              <div class="option-row">
+                <span class="option-label">Max FPS</span>
+                <select class="input input-sm select-sm" id="videoFps">
+                  <option value="10">10 fps</option>
+                  <option value="15" selected>15 fps</option>
+                  <option value="24">24 fps</option>
+                  <option value="30">30 fps</option>
+                </select>
+              </div>
+              <div class="option-row">
+                <span class="option-label">Max Resolution</span>
+                <select class="input input-sm select-sm" id="videoResolution">
+                  <option value="320">320p</option>
+                  <option value="480" selected>480p</option>
+                  <option value="640">640p</option>
+                  <option value="720">720p</option>
+                </select>
+              </div>
+              <div class="option-row">
+                <span class="option-label">Keyframe Interval</span>
+                <select class="input input-sm select-sm" id="gopInterval">
+                  <option value="5">Every 5 frames</option>
+                  <option value="10" selected>Every 10 frames</option>
+                  <option value="15">Every 15 frames</option>
+                  <option value="30">Every 30 frames</option>
+                </select>
+              </div>
+              <div class="option-row">
+                <span class="option-label">Max Frames</span>
+                <select class="input input-sm select-sm" id="maxFrames">
+                  <option value="50">50 frames</option>
+                  <option value="100" selected>100 frames</option>
+                  <option value="200">200 frames</option>
+                  <option value="300">300 frames</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Algorithm Info -->
+          <div class="algo-info">
+            <div class="algo-info-item">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              <span id="algoInfoText">DCT → Quantization → Zigzag → RLE → Huffman</span>
+            </div>
+          </div>
+
+          <div class="action-buttons">
+            <button class="btn btn-primary" id="mediaCompressBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              Compress
+            </button>
+            <button class="btn btn-secondary hidden" id="mediaDecompressBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              Decompress
+            </button>
+          </div>
+        </div>
+
+        <!-- Image Preview -->
+        <div class="media-preview hidden" id="mediaPreview">
+          <h3 class="preview-title">Preview</h3>
+          <div class="preview-container">
+            <canvas id="previewCanvas"></canvas>
+          </div>
+        </div>
+      </section>
+
       <!-- Decompression Password Prompt -->
       <section class="section decrypt-prompt hidden" id="decryptPrompt">
         <div class="decrypt-prompt-content">
@@ -244,6 +350,21 @@
           </button>
           <button class="btn btn-ghost" id="newFileBtn">Compress another</button>
         </div>
+
+        <!-- Media Result Preview (for decompressed images/video playback) -->
+        <div class="media-result-preview hidden" id="mediaResultPreview">
+          <h3 class="preview-title">Decompressed Preview</h3>
+          <div class="preview-container">
+            <canvas id="resultPreviewCanvas"></canvas>
+          </div>
+          <div class="video-playback hidden" id="videoPlayback">
+            <button class="btn btn-secondary btn-sm" id="playVideoBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Play
+            </button>
+            <span class="video-frame-info" id="videoFrameInfo">—</span>
+          </div>
+        </div>
       </section>
 
       <!-- Incoming File Transfer -->
@@ -318,7 +439,9 @@
     </aside>
   </div>
 
-  <script src="websocket-client.js"></script>
-  <script src="app.js"></script>
+  <script src="algorithms/image-compressor.js" defer></script>
+  <script src="algorithms/video-compressor.js" defer></script>
+  <script src="websocket-client.js" defer></script>
+  <script src="app.js" defer></script>
 </body>
 </html>

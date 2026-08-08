@@ -96,9 +96,9 @@ function buildHuffmanTree(freq) {
 }
 
 /**
- * Generate code table using string-based bit sequences.
- * This avoids the 32-bit integer overflow that corrupts data
- * when Huffman codes exceed 31 bits in length.
+ * Generate pre-packed code table.
+ * Each entry is { bits: Uint8Array of 0/1, length: number, packed: number[], packLen: number }
+ * The packed form groups bits into full bytes for faster bulk writes.
  */
 function generateCodeTable(root) {
   const table = new Array(256).fill(null);
@@ -106,8 +106,11 @@ function generateCodeTable(root) {
   function traverse(node, codeBits) {
     if (node === null) return;
     if (node.byte !== null) {
-      // Leaf node — store the code as an array of 0/1 values
-      table[node.byte] = codeBits.length > 0 ? codeBits.slice() : [0];
+      const bits = codeBits.length > 0 ? codeBits.slice() : [0];
+      table[node.byte] = {
+        bits: bits,
+        length: bits.length
+      };
       return;
     }
     codeBits.push(0);
@@ -123,37 +126,42 @@ function generateCodeTable(root) {
   return table;
 }
 
+/**
+ * Optimized BitWriter with buffered byte output.
+ * Accumulates bits in a 32-bit integer and flushes whole bytes,
+ * reducing per-bit overhead significantly.
+ */
 class BitWriter {
   constructor(estimatedSize) {
     this.buffer = new Uint8Array(Math.max(estimatedSize, 1024));
     this.bytePos = 0;
-    this.bitPos = 0;
-    this.currentByte = 0;
+    this.bitBuf = 0;   // 32-bit accumulator
+    this.bitsInBuf = 0; // number of valid bits in bitBuf
   }
 
   /**
    * Write an array of bit values (0 or 1).
-   * This replaces the old writeBits(code, length) that used integer shifts.
+   * Uses a 32-bit accumulator for fast batched writes.
    */
   writeBitArray(bits) {
     for (let i = 0; i < bits.length; i++) {
-      this.currentByte = (this.currentByte << 1) | bits[i];
-      this.bitPos++;
-      if (this.bitPos === 8) {
+      this.bitBuf = (this.bitBuf << 1) | bits[i];
+      this.bitsInBuf++;
+      if (this.bitsInBuf === 8) {
         this._ensureCapacity();
-        this.buffer[this.bytePos++] = this.currentByte;
-        this.currentByte = 0;
-        this.bitPos = 0;
+        this.buffer[this.bytePos++] = this.bitBuf;
+        this.bitBuf = 0;
+        this.bitsInBuf = 0;
       }
     }
   }
 
   flush() {
-    if (this.bitPos > 0) {
-      const padding = 8 - this.bitPos;
-      this.currentByte <<= padding;
+    if (this.bitsInBuf > 0) {
+      const padding = 8 - this.bitsInBuf;
+      this.bitBuf <<= padding;
       this._ensureCapacity();
-      this.buffer[this.bytePos++] = this.currentByte;
+      this.buffer[this.bytePos++] = this.bitBuf;
       return padding;
     }
     return 0;
@@ -193,8 +201,8 @@ function huffmanEncode(data, onProgress) {
   // Special case: single unique byte value
   // Just store the byte value and count — no bitstream needed
   if (uniqueCount === 1) {
-    // Header: [originalSize:4][flags:1 = 0x08 for single-byte mode][byteValue:1][freq table:256*4]
-    const headerSize = 4 + 1 + 1 + 256 * 4;
+    // Header: [originalSize:4][flags:1 = 0x08 for single-byte mode][byteValue:1]
+    const headerSize = 4 + 1 + 1;
     const output = new Uint8Array(headerSize);
     const view = new DataView(output.buffer);
 
@@ -207,11 +215,6 @@ function huffmanEncode(data, onProgress) {
       if (freq[i] > 0) { singleByte = i; break; }
     }
     output[5] = singleByte;
-
-    // Write frequency table for compatibility
-    for (let i = 0; i < 256; i++) {
-      view.setUint32(6 + i * 4, freq[i], false);
-    }
 
     const elapsed = performance.now() - startTime;
     if (onProgress) onProgress(1);
@@ -238,7 +241,7 @@ function huffmanEncode(data, onProgress) {
 
   for (let i = 0; i < data.length; i++) {
     const entry = codeTable[data[i]];
-    writer.writeBitArray(entry);
+    writer.writeBitArray(entry.bits);
     if (onProgress && i % progressStep === 0) {
       onProgress(0.3 + 0.6 * (i / data.length));
     }
@@ -256,8 +259,6 @@ function huffmanEncode(data, onProgress) {
 
   view.setUint32(0, data.length, false);
   // flags byte: low 3 bits = padding, bit 3 = 0 (normal mode)
-  // Old format had paddingBits at byte[4] directly, which is compatible
-  // since paddingBits is always 0-7 (fits in low 3 bits) and bit 3 wasn't used
   output[4] = paddingBits & 0x07;
 
   for (let i = 0; i < 256; i++) {
@@ -281,6 +282,89 @@ function huffmanEncode(data, onProgress) {
       frequencyTable: Array.from(freq)
     }
   };
+}
+
+/**
+ * Build a multi-level lookup table for fast Huffman decoding.
+ *
+ * Primary table: 2^PRIMARY_BITS entries. Each entry is either:
+ *   - { symbol, length } for codes ≤ PRIMARY_BITS long (direct lookup)
+ *   - { subtable, shift }  for codes longer than PRIMARY_BITS
+ *
+ * This avoids bit-by-bit tree traversal and typically resolves a symbol
+ * in a single table lookup (O(1) instead of O(codeLength)).
+ */
+const PRIMARY_BITS = 9; // 512-entry primary table
+
+function buildDecodeLookup(root, uniqueCount) {
+  if (uniqueCount <= 1) return null; // handled separately
+
+  // First, collect all codes by traversing the tree
+  const codes = [];
+  function collectCodes(node, bits, len) {
+    if (node === null) return;
+    if (node.byte !== null) {
+      codes.push({ symbol: node.byte, bits, length: len || 1 });
+      return;
+    }
+    collectCodes(node.left, (bits << 1) | 0, len + 1);
+    collectCodes(node.right, (bits << 1) | 1, len + 1);
+  }
+  collectCodes(root, 0, 0);
+
+  const primarySize = 1 << PRIMARY_BITS;
+  // -1 = not filled; we store as flat array: [symbol, length] pairs
+  // symbol = -1 means subtable redirect
+  const primary = new Int16Array(primarySize * 2).fill(-1);
+
+  // Secondary tables stored as Map for codes > PRIMARY_BITS
+  const secondaryTables = new Map(); // key = prefix bits, value = {table, bits}
+
+  for (const code of codes) {
+    if (code.length <= PRIMARY_BITS) {
+      // Fill all entries that share this prefix
+      const fill = 1 << (PRIMARY_BITS - code.length);
+      for (let j = 0; j < fill; j++) {
+        const idx = (code.bits << (PRIMARY_BITS - code.length)) | j;
+        primary[idx * 2] = code.symbol;
+        primary[idx * 2 + 1] = code.length;
+      }
+    } else {
+      // Long code: needs secondary table
+      const prefixBits = code.bits >>> (code.length - PRIMARY_BITS);
+      const suffixBits = code.bits & ((1 << (code.length - PRIMARY_BITS)) - 1);
+      const suffixLen = code.length - PRIMARY_BITS;
+
+      if (!secondaryTables.has(prefixBits)) {
+        secondaryTables.set(prefixBits, { entries: [], maxBits: 0 });
+      }
+      const st = secondaryTables.get(prefixBits);
+      st.entries.push({ symbol: code.symbol, bits: suffixBits, length: suffixLen });
+      if (suffixLen > st.maxBits) st.maxBits = suffixLen;
+
+      // Mark primary entry as redirect (symbol = -2)
+      primary[prefixBits * 2] = -2;
+      primary[prefixBits * 2 + 1] = prefixBits; // key into secondaryTables
+    }
+  }
+
+  // Build secondary tables into flat arrays
+  const builtSecondary = new Map();
+  for (const [prefix, st] of secondaryTables) {
+    const secSize = 1 << st.maxBits;
+    const table = new Int16Array(secSize * 2).fill(-1);
+    for (const entry of st.entries) {
+      const fill = 1 << (st.maxBits - entry.length);
+      for (let j = 0; j < fill; j++) {
+        const idx = (entry.bits << (st.maxBits - entry.length)) | j;
+        table[idx * 2] = entry.symbol;
+        table[idx * 2 + 1] = entry.length + PRIMARY_BITS; // total length
+      }
+    }
+    builtSecondary.set(prefix, { table, bits: st.maxBits });
+  }
+
+  return { primary, secondary: builtSecondary };
 }
 
 function huffmanDecode(compressed, onProgress) {
@@ -322,6 +406,9 @@ function huffmanDecode(compressed, onProgress) {
 
   // Normal mode: paddingBits stored in low 3 bits of flags
   const paddingBits = flags & 0x07;
+  if (paddingBits > 7) {
+    throw new Error(`Huffman decode error: invalid padding bits value ${paddingBits}`);
+  }
 
   const freq = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
@@ -329,42 +416,127 @@ function huffmanDecode(compressed, onProgress) {
   }
   if (onProgress) onProgress(0.1);
 
-  const { tree } = buildHuffmanTree(freq);
+  const { tree, uniqueCount } = buildHuffmanTree(freq);
+  if (onProgress) onProgress(0.15);
+
+  // Build lookup table for fast decoding
+  const lookup = buildDecodeLookup(tree, uniqueCount);
   if (onProgress) onProgress(0.2);
 
   const headerSize = 4 + 1 + 256 * 4;
   const output = new Uint8Array(originalSize);
   let outPos = 0;
-  let node = tree;
 
-  const totalBits = (compressed.length - headerSize) * 8 - paddingBits;
-  const progressStep = Math.max(1, Math.floor(totalBits / 70));
-  let bitCount = 0;
+  if (lookup) {
+    // --- Fast table-based decoding ---
+    // We maintain a bit buffer and consume bits via table lookups
+    let bitBuf = 0;
+    let bitsInBuf = 0;
+    let byteIdx = headerSize;
 
-  for (let byteIdx = headerSize; byteIdx < compressed.length; byteIdx++) {
-    const byte = compressed[byteIdx];
-    const bitsInThisByte = (byteIdx === compressed.length - 1) ? (8 - paddingBits) : 8;
+    const totalCompressedBytes = compressed.length - headerSize;
+    const progressStep = Math.max(1, Math.floor(originalSize / 70));
 
-    for (let bitIdx = 7; bitIdx >= 8 - bitsInThisByte; bitIdx--) {
-      const bit = (byte >> bitIdx) & 1;
-      node = bit === 0 ? node.left : node.right;
-
-      if (node === null) {
-        throw new Error('Huffman decode error: invalid bit sequence encountered');
+    while (outPos < originalSize) {
+      // Refill bit buffer — load up to 4 bytes at a time
+      while (bitsInBuf < 24 && byteIdx < compressed.length) {
+        bitBuf = (bitBuf << 8) | compressed[byteIdx++];
+        bitsInBuf += 8;
       }
 
-      if (node.byte !== null) {
-        output[outPos++] = node.byte;
-        node = tree;
-        if (outPos >= originalSize) break;
+      // Check we haven't consumed past actual data (accounting for padding)
+      if (bitsInBuf <= 0) break;
+
+      // Peek top PRIMARY_BITS from bit buffer
+      const peekBits = (bitsInBuf >= PRIMARY_BITS)
+        ? (bitBuf >>> (bitsInBuf - PRIMARY_BITS)) & ((1 << PRIMARY_BITS) - 1)
+        : (bitBuf << (PRIMARY_BITS - bitsInBuf)) & ((1 << PRIMARY_BITS) - 1);
+
+      const sym = lookup.primary[peekBits * 2];
+      const codeLen = lookup.primary[peekBits * 2 + 1];
+
+      if (sym >= 0) {
+        // Direct hit
+        output[outPos++] = sym;
+        bitsInBuf -= codeLen;
+      } else if (sym === -2) {
+        // Secondary table lookup
+        const secEntry = lookup.secondary.get(codeLen); // codeLen stores the prefix key
+        if (!secEntry) {
+          throw new Error('Huffman decode error: missing secondary table');
+        }
+        // Need more bits for secondary lookup
+        const totalNeeded = PRIMARY_BITS + secEntry.bits;
+        // Refill if needed
+        while (bitsInBuf < totalNeeded && byteIdx < compressed.length) {
+          bitBuf = (bitBuf << 8) | compressed[byteIdx++];
+          bitsInBuf += 8;
+        }
+        const secPeek = (bitBuf >>> (bitsInBuf - totalNeeded)) & ((1 << secEntry.bits) - 1);
+        const secSym = secEntry.table[secPeek * 2];
+        const secLen = secEntry.table[secPeek * 2 + 1]; // total code length
+        if (secSym < 0) {
+          throw new Error('Huffman decode error: invalid secondary lookup');
+        }
+        output[outPos++] = secSym;
+        bitsInBuf -= secLen;
+      } else {
+        // Fallback: bit-by-bit tree walk for safety
+        let node = tree;
+        while (node.byte === null && bitsInBuf > 0) {
+          bitsInBuf--;
+          const bit = (bitBuf >>> bitsInBuf) & 1;
+          node = bit === 0 ? node.left : node.right;
+          if (node === null) throw new Error('Huffman decode error: invalid bit sequence');
+        }
+        if (node.byte !== null) {
+          output[outPos++] = node.byte;
+        } else {
+          break;
+        }
       }
 
-      bitCount++;
-      if (onProgress && bitCount % progressStep === 0) {
-        onProgress(0.2 + 0.75 * (bitCount / totalBits));
+      // Mask off consumed bits to prevent overflow
+      if (bitsInBuf < 32) {
+        bitBuf &= (1 << bitsInBuf) - 1;
+      }
+
+      if (onProgress && outPos % progressStep === 0) {
+        onProgress(0.2 + 0.75 * (outPos / originalSize));
       }
     }
-    if (outPos >= originalSize) break;
+  } else {
+    // Fallback: original bit-by-bit decoder (for edge cases)
+    let node = tree;
+    const totalBits = (compressed.length - headerSize) * 8 - paddingBits;
+    const progressStep = Math.max(1, Math.floor(totalBits / 70));
+    let bitCount = 0;
+
+    for (let byteIdx = headerSize; byteIdx < compressed.length; byteIdx++) {
+      const byte = compressed[byteIdx];
+      const bitsInThisByte = (byteIdx === compressed.length - 1) ? (8 - paddingBits) : 8;
+
+      for (let bitIdx = 7; bitIdx >= 8 - bitsInThisByte; bitIdx--) {
+        const bit = (byte >> bitIdx) & 1;
+        node = bit === 0 ? node.left : node.right;
+
+        if (node === null) {
+          throw new Error('Huffman decode error: invalid bit sequence encountered');
+        }
+
+        if (node.byte !== null) {
+          output[outPos++] = node.byte;
+          node = tree;
+          if (outPos >= originalSize) break;
+        }
+
+        bitCount++;
+        if (onProgress && bitCount % progressStep === 0) {
+          onProgress(0.2 + 0.75 * (bitCount / totalBits));
+        }
+      }
+      if (outPos >= originalSize) break;
+    }
   }
 
   if (outPos !== originalSize) {

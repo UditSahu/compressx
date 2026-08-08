@@ -3,14 +3,42 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 const path = require('path');
 const crypto = require('crypto');
+const compression = require('compression');
 
 const app = express();
 const server = http.createServer(app);
 
+// --- gzip/brotli compression for HTTP responses ---
+// Compresses HTML, CSS, JS, JSON responses (60-80% smaller)
+app.use(compression({
+  level: 6, // balanced speed vs ratio
+  threshold: 1024, // only compress responses > 1KB
+  filter: (req, res) => {
+    // Don't compress already-compressed file downloads
+    if (req.path.endsWith('.compx') || req.path.endsWith('.enc')) return false;
+    return compression.filter(req, res);
+  }
+}));
+
+// --- Static files with optimized cache headers ---
 app.use(express.static(path.join(__dirname, 'public'), {
-  maxAge: '1h',
+  maxAge: '2h',
   etag: true,
-  lastModified: true
+  lastModified: true,
+  setHeaders: (res, filePath) => {
+    // Algorithm files rarely change — cache longer
+    if (filePath.includes('algorithms')) {
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 24h
+    }
+    // Worker file — cache longer
+    if (filePath.includes('workers')) {
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 24h
+    }
+    // HTML needs shorter cache for updates
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'public, max-age=300'); // 5min
+    }
+  }
 }));
 
 const wss = new WebSocketServer({ server, perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
@@ -49,13 +77,21 @@ function broadcastToRoom(roomCode, message, excludeWs) {
 
 /**
  * Broadcast binary data to room members (for file transfer).
+ * Includes backpressure check — skips clients whose send buffer
+ * is too full to prevent unbounded memory growth.
  */
+const MAX_BUFFERED_AMOUNT = 1024 * 1024; // 1 MB backpressure threshold
+
 function broadcastBinaryToRoom(roomCode, data, excludeWs) {
   const room = rooms.get(roomCode);
   if (!room) return;
 
   for (const client of room) {
     if (client !== excludeWs && client.readyState === 1) {
+      // Backpressure: skip if client's send buffer is too full
+      if (client.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+        continue;
+      }
       client.send(data);
     }
   }
