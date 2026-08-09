@@ -512,9 +512,10 @@ function decodeChannel(data, width, height, quantTable) {
  * @param {number} height
  * @param {number} quality - 1 to 100
  * @param {function} [onProgress]
+ * @param {number} [fileSize] - Actual file size on disk (for accurate stats)
  * @returns {{ compressed: Uint8Array, stats: object }}
  */
-function encodeImage(pixels, width, height, quality, onProgress) {
+function encodeImage(pixels, width, height, quality, onProgress, fileSize) {
   const startTime = performance.now();
   quality = Math.max(1, Math.min(100, quality || 75));
 
@@ -580,7 +581,9 @@ function encodeImage(pixels, width, height, quality, onProgress) {
   const elapsed = performance.now() - startTime;
   if (onProgress) onProgress(1);
 
-  const originalSize = pixels.length; // RGBA raw size
+  // Use actual file size if provided (e.g., the JPG was 1.5 MB on disk),
+  // otherwise fall back to raw RGBA pixel buffer size.
+  const originalSize = fileSize || pixels.length;
 
   return {
     compressed: output,

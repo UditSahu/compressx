@@ -17,11 +17,11 @@ self.onmessage = function(e) {
   try {
     switch (action) {
       case 'compress-image': {
-        const { pixels, width, height, quality } = data;
+        const { pixels, width, height, quality, fileSize } = data;
         const pixelArray = new Uint8ClampedArray(pixels);
         const result = ImageCompressor.encode(pixelArray, width, height, quality, (p) => {
           self.postMessage({ type: 'progress', value: p });
-        });
+        }, fileSize); // Pass actual file size for accurate stats
 
         self.postMessage({
           type: 'result',
@@ -47,7 +47,7 @@ self.onmessage = function(e) {
           width: result.width,
           height: result.height,
           stats: result.stats,
-          filename: filename.replace(/\.cimg$/, '.png')
+          filename: filename.replace(/\.cimg$/, '.jpg')  // Output JPEG, not PNG
         }, [result.pixels.buffer]);
         break;
       }

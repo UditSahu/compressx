@@ -902,7 +902,8 @@
           width: img.width,
           height: img.height,
           quality,
-          filename: file.name
+          filename: file.name,
+          fileSize: file.size  // Actual file size on disk for accurate stats
         }
       }, [pixelBuffer]);
     };
@@ -1026,9 +1027,10 @@
         const imgData = new ImageData(pixels, w, h);
         ctx.putImageData(imgData, 0, 0);
 
-        // Create downloadable PNG
+        // Output as JPEG (not PNG!) — matches what users expect
+        // PNG would be lossless but huge (6+ MB for a 2880×2880 image).
+        // JPEG at quality 0.92 gives excellent visual quality at ~1-1.5 MB.
         resultPreviewCanvas.toBlob((blob) => {
-          resultBuffer = null;
           resultFilename = msg.filename;
           resultEncrypted = false;
 
@@ -1036,11 +1038,17 @@
           const reader = new FileReader();
           reader.onload = () => {
             resultBuffer = reader.result;
-            showResults(msg.stats, 'decompress');
+            // Override stats with actual downloadable file size
+            const fixedStats = {
+              ...msg.stats,
+              compressedSize: currentFile.file.size,  // .cimg file size
+              originalSize: blob.size,                // actual output JPEG size
+            };
+            showResults(fixedStats, 'decompress');
             show(mediaResultPreview);
           };
           reader.readAsArrayBuffer(blob);
-        }, 'image/png');
+        }, 'image/jpeg', 0.92);
 
         mediaWorker.terminate();
         mediaWorker = null;
