@@ -415,12 +415,7 @@ function encodeChannel(channel, width, height, quantTable, onProgress, progressB
       const zigzagged = zigzagScan(quantized);
       const rle = rleEncodeBlock(zigzagged, prevDC);
 
-      prevDC = zigzagged[0]; // Update DC predictor (pre-delta)
-      // Actually, prevDC should be the actual DC, not the delta
-      prevDC = rle[0] + (prevDC); // Wait, let me fix this
-      // rle[0] = dc delta = zigzagged[0] - prevDC_before
-      // So new prevDC = prevDC_before + rle[0] = zigzagged[0]
-      prevDC = zigzagged[0];
+      prevDC = zigzagged[0]; // Update DC predictor to current block's DC value
 
       allBlocks.push(rle);
 
@@ -632,7 +627,7 @@ function decodeImage(data, onProgress) {
   if (onProgress) onProgress(0.05);
 
   // Huffman decode
-  const huffData = data.subarray(10);
+  const huffData = data.slice(10); // slice() creates independent copy — safe for DataView
   const huffResult = self.HuffmanCoding.decode(huffData, (p) => {
     if (onProgress) onProgress(0.05 + p * 0.2);
   });

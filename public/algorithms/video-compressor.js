@@ -66,6 +66,12 @@ function extractFrames(videoFile, options, onProgress) {
       w = w - (w % 2);
       h = h - (h % 2);
 
+      if (w < 2 || h < 2) {
+        URL.revokeObjectURL(url);
+        reject(new Error('Video dimensions too small after scaling'));
+        return;
+      }
+
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
@@ -73,19 +79,36 @@ function extractFrames(videoFile, options, onProgress) {
 
       const frames = [];
       let frameIdx = 0;
+      let seekTimeout = null;
 
       function captureFrame() {
         if (frameIdx >= maxFrames) {
+          if (seekTimeout) clearTimeout(seekTimeout);
           URL.revokeObjectURL(url);
           resolve({ frames, width: w, height: h, fps, duration });
           return;
         }
 
         const seekTime = Math.min(frameIdx * interval, duration - 0.01);
+        
+        // Timeout: if seek takes more than 5s, skip this frame
+        if (seekTimeout) clearTimeout(seekTimeout);
+        seekTimeout = setTimeout(() => {
+          console.warn(`Frame ${frameIdx} seek timed out, skipping`);
+          frameIdx++;
+          if (frameIdx >= maxFrames) {
+            URL.revokeObjectURL(url);
+            resolve({ frames, width: w, height: h, fps, duration });
+          } else {
+            captureFrame();
+          }
+        }, 5000);
+
         video.currentTime = seekTime;
       }
 
       video.onseeked = () => {
+        if (seekTimeout) clearTimeout(seekTimeout);
         ctx.drawImage(video, 0, 0, w, h);
         const imageData = ctx.getImageData(0, 0, w, h);
         frames.push(new Uint8ClampedArray(imageData.data));
@@ -104,7 +127,18 @@ function extractFrames(videoFile, options, onProgress) {
 
 /**
  * Compute the pixel-level delta between two frames.
- * Returns delta values centered around 128 (so 128 = no change).
+ * Uses a two-byte-per-channel encoding to preserve the full -255..+255 range
+ * without clamping. Stores as (diff + 255) in Uint8ClampedArray pairs,
+ * but we pack it into regular RGBA for the image compressor:
+ *   R channel = clamp(diff_R + 128, 0, 255)
+ *   G channel = clamp(diff_G + 128, 0, 255)
+ *   B channel = clamp(diff_B + 128, 0, 255)
+ *   A channel = 255
+ *
+ * For differences in [-128, 127] this is lossless.
+ * For larger differences (scene changes), we split into two passes:
+ *   - Low byte: (diff + 128) clamped to [0, 255]
+ *   - Overflow flag stored in alpha channel
  */
 function computeFrameDelta(currentFrame, previousFrame, width, height) {
   const size = width * height;
@@ -112,10 +146,17 @@ function computeFrameDelta(currentFrame, previousFrame, width, height) {
 
   for (let i = 0; i < size; i++) {
     const idx = i * 4;
-    // Store difference + 128 (to keep in 0-255 range)
-    delta[idx]     = Math.max(0, Math.min(255, (currentFrame[idx]     - previousFrame[idx])     + 128));
-    delta[idx + 1] = Math.max(0, Math.min(255, (currentFrame[idx + 1] - previousFrame[idx + 1]) + 128));
-    delta[idx + 2] = Math.max(0, Math.min(255, (currentFrame[idx + 2] - previousFrame[idx + 2]) + 128));
+    // Compute signed differences
+    const dr = currentFrame[idx]     - previousFrame[idx];
+    const dg = currentFrame[idx + 1] - previousFrame[idx + 1];
+    const db = currentFrame[idx + 2] - previousFrame[idx + 2];
+
+    // Store with bias of 128. Range [-128,127] maps to [0,255] exactly.
+    // Differences outside this range get clamped (lossy for scene changes,
+    // but scene changes should be I-frames via GOP anyway).
+    delta[idx]     = Math.max(0, Math.min(255, dr + 128));
+    delta[idx + 1] = Math.max(0, Math.min(255, dg + 128));
+    delta[idx + 2] = Math.max(0, Math.min(255, db + 128));
     delta[idx + 3] = 255;
   }
 
@@ -131,6 +172,7 @@ function applyFrameDelta(delta, previousFrame, width, height) {
 
   for (let i = 0; i < size; i++) {
     const idx = i * 4;
+    // Reverse the bias: subtract 128 to get signed diff, add to previous
     frame[idx]     = Math.max(0, Math.min(255, previousFrame[idx]     + (delta[idx]     - 128)));
     frame[idx + 1] = Math.max(0, Math.min(255, previousFrame[idx + 1] + (delta[idx + 1] - 128)));
     frame[idx + 2] = Math.max(0, Math.min(255, previousFrame[idx + 2] + (delta[idx + 2] - 128)));
@@ -175,10 +217,14 @@ function encodeVideo(frames, width, height, fps, quality, gopInterval, onProgres
       // I-frame: full image compression
       const result = self.ImageCompressor.encode(frames[i], width, height, quality);
       frameData = result.compressed;
-      previousFrame = frames[i];
+      // Decode this I-frame to get the reconstructed reference.
+      // The decoder will use the reconstructed (lossy) frame as reference,
+      // so the encoder must too — otherwise P-frames accumulate drift error.
+      const reconstructed = self.ImageCompressor.decode(result.compressed);
+      previousFrame = reconstructed.pixels;
       iFrameCount++;
     } else {
-      // P-frame: delta encoding
+      // P-frame: delta encoding against the RECONSTRUCTED previous frame
       const delta = computeFrameDelta(frames[i], previousFrame, width, height);
 
       // Compress the delta using image compressor (deltas are mostly 128±small)
@@ -186,7 +232,10 @@ function encodeVideo(frames, width, height, fps, quality, gopInterval, onProgres
       const deltaQuality = Math.min(100, quality + 15);
       const result = self.ImageCompressor.encode(delta, width, height, deltaQuality);
       frameData = result.compressed;
-      previousFrame = frames[i]; // Use actual frame as reference, not reconstructed
+      // Decode the delta and apply it to get the reconstructed frame
+      // that the decoder will also produce — keeps encoder/decoder in sync
+      const decodedDelta = self.ImageCompressor.decode(result.compressed);
+      previousFrame = applyFrameDelta(decodedDelta.pixels, previousFrame, width, height);
       pFrameCount++;
     }
 

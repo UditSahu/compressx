@@ -293,9 +293,9 @@
   }
 
   function getExtension(filename) {
-    const parts = filename.split('.');
-    if (parts.length < 2) return '';
-    return '.' + parts.slice(1).join('.');
+    const idx = filename.lastIndexOf('.');
+    if (idx < 0) return '';
+    return filename.substring(idx);
   }
 
   function resetUI() {
@@ -487,7 +487,7 @@
     $('#statRatio').textContent = (stats.ratio > 0 ? stats.ratio : '0') + '%';
     $('#statTime').textContent = formatTime(parseFloat(stats.time));
     $('#statSpeed').textContent = stats.speed ? stats.speed + ' MB/s' : '—';
-    $('#statAlgo').textContent = stats.mode || stats.algorithm || '—';
+    $('#statAlgo').textContent = stats.algorithm || stats.mode || '—';
 
     // Encryption badge
     if (stats.encrypted) {
@@ -886,8 +886,9 @@
           mediaWorker = null;
         }
         if (msg.type === 'error') {
-          alert('Error: ' + msg.message);
+          alert('Image compression error: ' + msg.message);
           hide(progressSection);
+          show(mediaControls);
           mediaWorker.terminate();
           mediaWorker = null;
         }
@@ -955,8 +956,9 @@
           mediaWorker = null;
         }
         if (msg.type === 'error') {
-          alert('Error: ' + msg.message);
+          alert('Video compression error: ' + msg.message);
           hide(progressSection);
+          show(mediaControls);
           mediaWorker.terminate();
           mediaWorker = null;
         }
@@ -981,6 +983,7 @@
     }).catch((err) => {
       alert('Video error: ' + err.message);
       hide(progressSection);
+      show(mediaControls);
     });
   }
 
@@ -1043,8 +1046,9 @@
         mediaWorker = null;
       }
       if (msg.type === 'error') {
-        alert('Error: ' + msg.message);
+        alert('Image decompression error: ' + msg.message);
         hide(progressSection);
+        show(mediaControls);
         mediaWorker.terminate();
         mediaWorker = null;
       }
@@ -1063,38 +1067,61 @@
     progressPercent.textContent = '0%';
     progressLabel.textContent = 'Decompressing video...';
 
-    // Video decompression needs ImageCompressor (main thread for now)
-    const data = new Uint8Array(currentFile.buffer);
-    try {
-      const result = VideoCompressor.decode(data, (p) => {
-        const pct = Math.round(p * 100);
+    // Run in worker to avoid blocking the main thread (Bug #5 fix)
+    if (mediaWorker) mediaWorker.terminate();
+    mediaWorker = new Worker('workers/media.worker.js');
+
+    mediaWorker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'progress') {
+        const pct = Math.round(msg.value * 100);
         progressBar.style.width = pct + '%';
         progressPercent.textContent = pct + '%';
-      });
-
-      decompressedVideoFrames = result;
-
-      // Show first frame
-      if (result.frames.length > 0) {
-        resultPreviewCanvas.width = result.width;
-        resultPreviewCanvas.height = result.height;
-        const ctx = resultPreviewCanvas.getContext('2d');
-        const imgData = new ImageData(result.frames[0], result.width, result.height);
-        ctx.putImageData(imgData, 0, 0);
       }
+      if (msg.type === 'result') {
+        // Reconstruct frames from transferred buffers
+        const frames = msg.frames.map(buf => new Uint8ClampedArray(buf));
+        decompressedVideoFrames = {
+          frames,
+          width: msg.width,
+          height: msg.height,
+          fps: msg.fps
+        };
 
-      show(mediaResultPreview);
-      show(videoPlayback);
-      videoFrameInfo.textContent = `${result.frames.length} frames @ ${result.fps}fps`;
+        // Show first frame in preview
+        if (frames.length > 0) {
+          resultPreviewCanvas.width = msg.width;
+          resultPreviewCanvas.height = msg.height;
+          const ctx = resultPreviewCanvas.getContext('2d');
+          const imgData = new ImageData(frames[0], msg.width, msg.height);
+          ctx.putImageData(imgData, 0, 0);
+        }
 
-      resultBuffer = currentFile.buffer;
-      resultFilename = currentFile.file.name.replace(/\.cvid$/, '_frames.cvid');
-      showResults(result.stats, 'decompress');
+        show(mediaResultPreview);
+        show(videoPlayback);
+        videoFrameInfo.textContent = `${frames.length} frames @ ${msg.fps}fps`;
 
-    } catch (err) {
-      alert('Decompression error: ' + err.message);
-      hide(progressSection);
-    }
+        resultBuffer = currentFile.buffer;
+        resultFilename = currentFile.file.name.replace(/\.cvid$/, '_frames.cvid');
+        showResults(msg.stats, 'decompress');
+
+        mediaWorker.terminate();
+        mediaWorker = null;
+      }
+      if (msg.type === 'error') {
+        alert('Video decompression error: ' + msg.message);
+        hide(progressSection);
+        show(mediaControls);
+        mediaWorker.terminate();
+        mediaWorker = null;
+      }
+    };
+
+    const bufferCopy = currentFile.buffer.slice(0);
+    mediaWorker.postMessage({
+      action: 'decompress-video',
+      data: { buffer: bufferCopy, filename: currentFile.file.name }
+    }, [bufferCopy]);
   }
 
   // Video playback
