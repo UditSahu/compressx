@@ -484,7 +484,8 @@
 
     $('#statOriginal').textContent = formatBytes(stats.originalSize);
     $('#statCompressed').textContent = formatBytes(stats.compressedSize);
-    $('#statRatio').textContent = (stats.ratio > 0 ? stats.ratio : '0') + '%';
+    const ratioVal = stats.ratio !== undefined ? parseFloat(stats.ratio) : (stats.originalSize > 0 ? ((1 - stats.compressedSize / stats.originalSize) * 100) : 0);
+    $('#statRatio').textContent = (isNaN(ratioVal) ? '0.00' : ratioVal.toFixed(2)) + '%';
     $('#statTime').textContent = formatTime(parseFloat(stats.time));
     $('#statSpeed').textContent = stats.speed ? stats.speed + ' MB/s' : '—';
     $('#statAlgo').textContent = stats.algorithm || stats.mode || '—';
@@ -978,7 +979,8 @@
           fps: frameData.fps,
           quality,
           gopInterval,
-          filename: file.name
+          filename: file.name,
+          fileSize: file.size
         }
       }, transfers);
     }).catch((err) => {
@@ -1039,10 +1041,12 @@
           reader.onload = () => {
             resultBuffer = reader.result;
             // Override stats with actual downloadable file size
+            const ratioVal = blob.size > 0 ? ((1 - currentFile.file.size / blob.size) * 100).toFixed(2) : '0.00';
             const fixedStats = {
               ...msg.stats,
               compressedSize: currentFile.file.size,  // .cimg file size
               originalSize: blob.size,                // actual output JPEG size
+              ratio: ratioVal
             };
             showResults(fixedStats, 'decompress');
             show(mediaResultPreview);
@@ -1111,7 +1115,15 @@
 
         resultBuffer = currentFile.buffer;
         resultFilename = currentFile.file.name.replace(/\.cvid$/, '_frames.cvid');
-        showResults(msg.stats, 'decompress');
+        const estSize = frames.length * msg.width * msg.height * 4;
+        const vidRatio = estSize > 0 ? ((1 - currentFile.file.size / estSize) * 100).toFixed(2) : '0.00';
+        const fixedVidStats = {
+          ...msg.stats,
+          compressedSize: currentFile.file.size,
+          originalSize: estSize,
+          ratio: vidRatio
+        };
+        showResults(fixedVidStats, 'decompress');
 
         mediaWorker.terminate();
         mediaWorker = null;

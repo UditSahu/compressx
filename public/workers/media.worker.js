@@ -54,14 +54,14 @@ self.onmessage = function(e) {
 
       case 'compress-video-frames': {
         // Frames are passed from main thread after extraction
-        const { frames, width, height, fps, quality, gopInterval, filename } = data;
+        const { frames, width, height, fps, quality, gopInterval, filename, fileSize } = data;
 
         // Reconstruct frame arrays from transferred buffers
         const frameArrays = frames.map(buf => new Uint8ClampedArray(buf));
 
         const result = VideoCompressor.encode(frameArrays, width, height, fps, quality, gopInterval, (p) => {
           self.postMessage({ type: 'progress', value: 0.3 + p * 0.7 }); // 0.3 was frame extraction
-        });
+        }, fileSize);
 
         self.postMessage({
           type: 'result',

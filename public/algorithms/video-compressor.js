@@ -194,7 +194,7 @@ function applyFrameDelta(delta, previousFrame, width, height) {
  * @param {function} onProgress
  * @returns {{ compressed: Uint8Array, stats: object }}
  */
-function encodeVideo(frames, width, height, fps, quality, gopInterval, onProgress) {
+function encodeVideo(frames, width, height, fps, quality, gopInterval, onProgress, fileSize) {
   const startTime = performance.now();
   quality = Math.max(1, Math.min(100, quality || 50));
   gopInterval = gopInterval || 10;
@@ -202,14 +202,14 @@ function encodeVideo(frames, width, height, fps, quality, gopInterval, onProgres
   const frameCount = frames.length;
   const encodedFrames = [];
 
-  let totalOriginalSize = 0;
+  let rawFramesTotalSize = 0;
   let iFrameCount = 0;
   let pFrameCount = 0;
   let previousFrame = null;
 
   for (let i = 0; i < frameCount; i++) {
     const isIFrame = (i % gopInterval === 0);
-    totalOriginalSize += frames[i].length;
+    rawFramesTotalSize += frames[i].length;
 
     let frameData;
 
@@ -280,6 +280,8 @@ function encodeVideo(frames, width, height, fps, quality, gopInterval, onProgres
 
   const elapsed = performance.now() - startTime;
   if (onProgress) onProgress(1);
+
+  const totalOriginalSize = fileSize || rawFramesTotalSize;
 
   return {
     compressed: output,

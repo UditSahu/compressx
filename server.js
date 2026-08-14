@@ -116,6 +116,9 @@ function send(ws, data) {
 }
 
 wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+
   const userId = crypto.randomBytes(4).toString('hex');
   const userColor = COLORS[colorIndex++ % COLORS.length];
 
@@ -344,12 +347,6 @@ const heartbeat = setInterval(() => {
     ws.ping();
   });
 }, HEARTBEAT_INTERVAL);
-
-// Set isAlive on each new connection
-wss.on('connection', (ws) => {
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
-});
 
 wss.on('close', () => clearInterval(heartbeat));
 
