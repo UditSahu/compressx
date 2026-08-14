@@ -56,6 +56,12 @@
             </svg>
             <p class="drop-text">Drop a file here or <button class="link-btn" id="browseBtn">browse</button></p>
             <p class="drop-hint">Files, images, or videos • Max 50 MB • .compx / .cimg / .cvid for decompression</p>
+            <div class="drop-chips">
+              <span class="chip">Documents & Data</span>
+              <span class="chip">Images (DCT)</span>
+              <span class="chip">Video (I/P-Frames)</span>
+              <span class="chip">AES-256 Encryption</span>
+            </div>
           </div>
           <input type="file" id="fileInput" hidden>
         </div>
@@ -295,7 +301,24 @@
 
       <!-- Results -->
       <section class="section results-section hidden" id="resultsSection">
-        <h2 class="section-title">Results</h2>
+        <div class="result-hero-banner" id="resultHeroBanner">
+          <div class="hero-badge">
+            <div class="hero-icon-wrap">
+              <svg class="hero-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22 4 12 14.01 9 11.01"/>
+              </svg>
+            </div>
+            <div class="hero-text">
+              <span class="hero-title" id="heroTitle">Compression Complete</span>
+              <span class="hero-subtitle" id="heroSubtitle">Your optimized file is ready</span>
+            </div>
+          </div>
+          <div class="hero-pill" id="heroPill">
+            <span class="hero-pill-value" id="heroPillValue">—</span>
+            <span class="hero-pill-label" id="heroPillLabel">Saved</span>
+          </div>
+        </div>
 
         <div class="stats-grid" id="statsGrid">
           <div class="stat-card">
@@ -342,7 +365,14 @@
         <div class="result-actions">
           <button class="btn btn-primary" id="downloadBtn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Download
+            Download Result
+          </button>
+          <button class="btn btn-secondary" id="editSettingsBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            Adjust Settings
           </button>
           <button class="btn btn-accent hidden" id="sendToRoomBtn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>

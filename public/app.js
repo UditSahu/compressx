@@ -64,8 +64,13 @@
   const progressLabel = $('#progressLabel');
   const resultsSection = $('#resultsSection');
   const downloadBtn = $('#downloadBtn');
+  const editSettingsBtn = $('#editSettingsBtn');
   const sendToRoomBtn = $('#sendToRoomBtn');
   const newFileBtn = $('#newFileBtn');
+  const heroTitle = $('#heroTitle');
+  const heroSubtitle = $('#heroSubtitle');
+  const heroPillValue = $('#heroPillValue');
+  const heroPillLabel = $('#heroPillLabel');
   const chartContainer = $('#chartContainer');
   const freqChart = $('#freqChart');
   const activitySection = $('#activitySection');
@@ -344,6 +349,19 @@
   clearMediaFile.addEventListener('click', resetUI);
   newFileBtn.addEventListener('click', resetUI);
 
+  if (editSettingsBtn) {
+    editSettingsBtn.addEventListener('click', () => {
+      hide(resultsSection);
+      if (mediaType) {
+        show(mediaControls);
+        mediaControls.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        show(fileControls);
+        fileControls.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+  }
+
   function getSelectedAlgorithm() {
     const checked = document.querySelector('input[name="algo"]:checked');
     return parseInt(checked.value, 10);
@@ -480,12 +498,31 @@
   // --- Results ---
   function showResults(stats, action) {
     hide(progressSection);
+    hide(fileControls);
+    hide(mediaControls);
     show(resultsSection);
+
+    const isCompress = action === 'compress';
+    const ratioVal = stats.ratio !== undefined ? parseFloat(stats.ratio) : (stats.originalSize > 0 ? ((1 - stats.compressedSize / stats.originalSize) * 100) : 0);
+    const ratioFormatted = isNaN(ratioVal) ? '0.00' : ratioVal.toFixed(2);
+
+    if (heroTitle) {
+      if (isCompress) {
+        heroTitle.textContent = ratioVal > 0 ? 'Compression Complete!' : 'File Processed';
+        heroSubtitle.textContent = `${formatBytes(stats.originalSize)} → ${formatBytes(stats.compressedSize)} (${stats.algorithm || stats.mode || 'Custom'})`;
+        heroPillValue.textContent = ratioVal > 0 ? `-${ratioFormatted}%` : `${ratioFormatted}%`;
+        heroPillLabel.textContent = ratioVal >= 0 ? 'Space Saved' : 'Size Change';
+      } else {
+        heroTitle.textContent = 'Decompression Complete!';
+        heroSubtitle.textContent = `Restored to ${formatBytes(stats.originalSize)} (${stats.algorithm || stats.mode || 'Custom'})`;
+        heroPillValue.textContent = '✓';
+        heroPillLabel.textContent = 'Restored';
+      }
+    }
 
     $('#statOriginal').textContent = formatBytes(stats.originalSize);
     $('#statCompressed').textContent = formatBytes(stats.compressedSize);
-    const ratioVal = stats.ratio !== undefined ? parseFloat(stats.ratio) : (stats.originalSize > 0 ? ((1 - stats.compressedSize / stats.originalSize) * 100) : 0);
-    $('#statRatio').textContent = (isNaN(ratioVal) ? '0.00' : ratioVal.toFixed(2)) + '%';
+    $('#statRatio').textContent = ratioFormatted + '%';
     $('#statTime').textContent = formatTime(parseFloat(stats.time));
     $('#statSpeed').textContent = stats.speed ? stats.speed + ' MB/s' : '—';
     $('#statAlgo').textContent = stats.algorithm || stats.mode || '—';
@@ -510,6 +547,11 @@
     } else {
       hide(sendToRoomBtn);
     }
+
+    // Smoothly scroll directly to results
+    setTimeout(() => {
+      resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
   }
 
   function drawFrequencyChart(freqTable) {
