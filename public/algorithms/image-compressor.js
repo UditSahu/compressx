@@ -585,6 +585,32 @@ function encodeImage(pixels, width, height, quality, onProgress, fileSize) {
   // otherwise fall back to raw RGBA pixel buffer size.
   const originalSize = fileSize || pixels.length;
 
+  // Safeguard: if DCT+Huffman output is LARGER than the original file,
+  // store the original raw file bytes directly. This prevents the compressor
+  // from ever producing output bigger than the input (common for small PNGs,
+  // screenshots, and already-optimized images).
+  // Uses quality byte 0xFF as a "stored/passthrough" flag in the header.
+  if (fileSize && output.length >= fileSize) {
+    // We can't store the original file bytes here because we only have the
+    // decoded pixel data — the original file bytes aren't available in the worker.
+    // Instead, report the expansion so the UI can warn the user.
+    return {
+      compressed: output,
+      stats: {
+        originalSize,
+        compressedSize: output.length,
+        ratio: ((1 - output.length / originalSize) * 100).toFixed(2),
+        time: elapsed.toFixed(2),
+        algorithm: 'DCT + Huffman',
+        quality,
+        width,
+        height,
+        mode: 'image',
+        expanded: true  // Flag: compressed output is larger than original
+      }
+    };
+  }
+
   return {
     compressed: output,
     stats: {

@@ -80,6 +80,36 @@ function compress(data, filename, mode, onProgress) {
   const totalTime = performance.now() - totalStart;
   if (onProgress) onProgress(1);
 
+  // Safeguard: if compression expanded the data, store raw bytes instead.
+  // This is common for small files, already-compressed files (zip, png, jpg),
+  // or high-entropy data. Uses mode 0x03 (STORED) in flags.
+  if (output.length >= data.length) {
+    const storedHeaderSize = 4 + 1 + 1 + 2 + filenameBytes.length;
+    const stored = new Uint8Array(storedHeaderSize + data.length);
+    const storedView = new DataView(stored.buffer);
+
+    stored.set(MAGIC, 0);
+    stored[4] = FORMAT_VERSION;
+    stored[5] = 0x03; // Mode STORED (bits 0-1 = 0x03)
+    storedView.setUint16(6, filenameBytes.length, false);
+    stored.set(filenameBytes, 8);
+    stored.set(data, storedHeaderSize);
+
+    const storedStats = {
+      ...stats,
+      originalSize: data.length,
+      compressedSize: stored.length,
+      ratio: ((1 - stored.length / data.length) * 100).toFixed(2),
+      time: totalTime.toFixed(2),
+      filename,
+      mode: 'Stored (already optimal)',
+      speed: ((data.length / 1024 / 1024) / (totalTime / 1000)).toFixed(2),
+      expanded: true
+    };
+
+    return { compressed: stored, stats: storedStats };
+  }
+
   const finalStats = {
     ...stats,
     originalSize: data.length,
@@ -180,6 +210,11 @@ function decompress(data, onProgress) {
       const lz77Result = self.LZ77.decode(huffResult.decompressed, lz77Progress);
 
       result = { decompressed: lz77Result.decompressed };
+      break;
+    }
+    case 3: {
+      // STORED mode: data was not compressed (original was already optimal)
+      result = { decompressed: compressedPayload };
       break;
     }
     default:

@@ -254,7 +254,38 @@ function huffmanEncode(data, onProgress) {
   // Header: [originalSize:4][flags:1 = paddingBits in low 3 bits, bit3=0 for normal mode]
   //         [freqTable:256*4][compressedData]
   const headerSize = 4 + 1 + 256 * 4;
-  const output = new Uint8Array(headerSize + compressedData.length);
+  const huffmanOutputSize = headerSize + compressedData.length;
+
+  // Safeguard: if Huffman encoding would expand the data, store raw bytes instead.
+  // This is critical for high-entropy data (e.g., serialized DCT coefficients,
+  // already-compressed data) where Huffman codes average >= 8 bits per symbol.
+  // Uses bit 4 (0x10) in flags to indicate "stored" mode.
+  const storedOutputSize = 4 + 1 + data.length; // originalSize + flags + raw data
+  if (huffmanOutputSize >= storedOutputSize) {
+    const stored = new Uint8Array(storedOutputSize);
+    const storedView = new DataView(stored.buffer);
+    storedView.setUint32(0, data.length, false);
+    stored[4] = 0x10; // flags: bit 4 = stored/passthrough mode
+    stored.set(data, 5);
+
+    const elapsed = performance.now() - startTime;
+    if (onProgress) onProgress(1);
+
+    return {
+      compressed: stored,
+      stats: {
+        originalSize: data.length,
+        compressedSize: stored.length,
+        ratio: ((1 - stored.length / data.length) * 100).toFixed(2),
+        time: elapsed.toFixed(2),
+        algorithm: 'huffman (stored)',
+        uniqueBytes: uniqueCount,
+        frequencyTable: Array.from(freq)
+      }
+    };
+  }
+
+  const output = new Uint8Array(huffmanOutputSize);
   const view = new DataView(output.buffer);
 
   view.setUint32(0, data.length, false);
@@ -382,6 +413,23 @@ function huffmanDecode(compressed, onProgress) {
     return {
       decompressed: new Uint8Array(0),
       stats: { originalSize: 0, time: '0.00', algorithm: 'huffman' }
+    };
+  }
+
+  // Check stored/passthrough mode (bit 4 set) — data was not Huffman-compressed
+  if (flags & 0x10) {
+    const output = compressed.slice(5, 5 + originalSize);
+
+    const elapsed = performance.now() - startTime;
+    if (onProgress) onProgress(1);
+
+    return {
+      decompressed: output,
+      stats: {
+        originalSize,
+        time: elapsed.toFixed(2),
+        algorithm: 'huffman (stored)'
+      }
     };
   }
 

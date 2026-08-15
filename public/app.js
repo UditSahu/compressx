@@ -508,10 +508,22 @@
 
     if (heroTitle) {
       if (isCompress) {
-        heroTitle.textContent = ratioVal > 0 ? 'Compression Complete!' : 'File Processed';
-        heroSubtitle.textContent = `${formatBytes(stats.originalSize)} → ${formatBytes(stats.compressedSize)} (${stats.algorithm || stats.mode || 'Custom'})`;
-        heroPillValue.textContent = ratioVal > 0 ? `-${ratioFormatted}%` : `${ratioFormatted}%`;
-        heroPillLabel.textContent = ratioVal >= 0 ? 'Space Saved' : 'Size Change';
+        if (stats.expanded) {
+          heroTitle.textContent = 'File Already Optimized';
+          heroSubtitle.textContent = `Original ${formatBytes(stats.originalSize)} is already well compressed — kept as-is`;
+          heroPillValue.textContent = '0%';
+          heroPillLabel.textContent = 'Already Optimal';
+        } else if (ratioVal > 0) {
+          heroTitle.textContent = 'Compression Complete!';
+          heroSubtitle.textContent = `${formatBytes(stats.originalSize)} → ${formatBytes(stats.compressedSize)} (${stats.algorithm || stats.mode || 'Custom'})`;
+          heroPillValue.textContent = `-${ratioFormatted}%`;
+          heroPillLabel.textContent = 'Space Saved';
+        } else {
+          heroTitle.textContent = 'File Processed';
+          heroSubtitle.textContent = `${formatBytes(stats.originalSize)} → ${formatBytes(stats.compressedSize)} (${stats.algorithm || stats.mode || 'Custom'})`;
+          heroPillValue.textContent = `${ratioFormatted}%`;
+          heroPillLabel.textContent = 'Size Change';
+        }
       } else {
         heroTitle.textContent = 'Decompression Complete!';
         heroSubtitle.textContent = `Restored to ${formatBytes(stats.originalSize)} (${stats.algorithm || stats.mode || 'Custom'})`;
@@ -937,18 +949,27 @@
         }
       };
 
-      const pixelBuffer = imageData.data.buffer.slice(0);
-      mediaWorker.postMessage({
-        action: 'compress-image',
-        data: {
-          pixels: pixelBuffer,
-          width: img.width,
-          height: img.height,
-          quality,
-          filename: file.name,
-          fileSize: file.size  // Actual file size on disk for accurate stats
-        }
-      }, [pixelBuffer]);
+      // Read original file bytes for passthrough fallback
+      const reader = new FileReader();
+      reader.onload = () => {
+        const rawFileBuffer = reader.result;
+
+        const pixelBuffer = imageData.data.buffer.slice(0);
+        const rawCopy = rawFileBuffer.slice(0); // Copy for transfer
+        mediaWorker.postMessage({
+          action: 'compress-image',
+          data: {
+            pixels: pixelBuffer,
+            width: img.width,
+            height: img.height,
+            quality,
+            filename: file.name,
+            fileSize: file.size,  // Actual file size on disk for accurate stats
+            rawFileBuffer: rawCopy
+          }
+        }, [pixelBuffer, rawCopy]);
+      };
+      reader.readAsArrayBuffer(file);
     };
     img.src = URL.createObjectURL(file);
   }

@@ -17,19 +17,41 @@ self.onmessage = function(e) {
   try {
     switch (action) {
       case 'compress-image': {
-        const { pixels, width, height, quality, fileSize } = data;
+        const { pixels, width, height, quality, fileSize, rawFileBuffer } = data;
         const pixelArray = new Uint8ClampedArray(pixels);
         const result = ImageCompressor.encode(pixelArray, width, height, quality, (p) => {
           self.postMessage({ type: 'progress', value: p });
         }, fileSize); // Pass actual file size for accurate stats
 
-        self.postMessage({
-          type: 'result',
-          action: 'compress-image',
-          buffer: result.compressed.buffer,
-          stats: result.stats,
-          filename: data.filename.replace(/\.[^.]+$/, '') + '.cimg'
-        }, [result.compressed.buffer]);
+        // If compression expanded the file, pass through the original bytes
+        if (result.stats.expanded && rawFileBuffer) {
+          const originalBytes = new Uint8Array(rawFileBuffer);
+          const passBuffer = originalBytes.buffer.slice(
+            originalBytes.byteOffset,
+            originalBytes.byteOffset + originalBytes.byteLength
+          );
+          self.postMessage({
+            type: 'result',
+            action: 'compress-image',
+            buffer: passBuffer,
+            stats: {
+              ...result.stats,
+              compressedSize: originalBytes.length,
+              ratio: '0.00',
+              algorithm: 'Stored (original already optimal)',
+              expanded: true
+            },
+            filename: data.filename // Keep original filename
+          }, [passBuffer]);
+        } else {
+          self.postMessage({
+            type: 'result',
+            action: 'compress-image',
+            buffer: result.compressed.buffer,
+            stats: result.stats,
+            filename: data.filename.replace(/\.[^.]+$/, '') + '.cimg'
+          }, [result.compressed.buffer]);
+        }
         break;
       }
 
